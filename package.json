@@ -1,0 +1,19 @@
+{
+  "name": "@supercode/tui-token-usage-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode TUI sidebar section: cumulative Token Usage (input, output, reasoning, cache read/write, cache rate, cost) of the current session, folded from step-finish parts.",
+  "scripts": {
+    "test": "node --test --conditions browser 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.17.8",
+    "@opencode-ai/sdk": "1.17.8",
+    "@opentui/solid": "0.3.4",
+    "@types/node": "24.13.3",
+    "solid-js": "1.9.12",
+    "typescript": "5.8.2"
+  }
+}
