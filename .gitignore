@@ -1,1 +1,11 @@
+.codegraph/
 node_modules/
+dist/
+build/
+coverage/
+.ruff_cache/
+*.log
+*.tgz
+.DS_Store
+.env
+.env.*
