@@ -1,8 +1,9 @@
 /**
  * supercode.token-usage — TUI sidebar section showing the cumulative Token
- * Usage of the current session: Input, Output, Reasoning, Cache read,
- * Cache write, Cache rate and Cost, folded from `step-finish` parts of the
- * session's assistant messages.
+ * Usage of the current session family: Input, Output, Reasoning, Cache read,
+ * Cache write and Cache rate, read from the session aggregates maintained
+ * by OpenCode from every `step-finish` part (root plus all subagent
+ * descendants; an "Including subagents" hint marks their contribution).
  *
  * This file is only the View plus slot registration: it computes no numbers
  * and formats nothing — all logic lives in ./usage-model.ts (the tested seam).
@@ -12,9 +13,13 @@
  */
 /** @jsxImportSource @opentui/solid */
 import { createSignal, For, Show } from "solid-js";
-import { TextAttributes } from "@opentui/core";
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui";
-import { USAGE_SECTION_TITLE, USAGE_STATUS_TEXT, createUsageModel } from "./usage-model.ts";
+import {
+  USAGE_SECTION_TITLE,
+  USAGE_STATUS_TEXT,
+  USAGE_SUBAGENTS_TEXT,
+  createUsageModel,
+} from "./usage-model.ts";
 
 function Section(props: { api: TuiPluginApi; session_id: string }) {
   const theme = () => props.api.theme.current;
@@ -23,13 +28,12 @@ function Section(props: { api: TuiPluginApi; session_id: string }) {
 
   return (
     <box>
-      <text
-        fg={theme().primary}
-        attributes={TextAttributes.BOLD}
-        onMouseDown={() => setCollapsed(!collapsed())}
-      >
-        {collapsed() ? "▸" : "▾"} {USAGE_SECTION_TITLE}
-      </text>
+      <box flexDirection="row" gap={1} onMouseDown={() => setCollapsed(!collapsed())}>
+        <text fg={theme().text}>{collapsed() ? "▶" : "▼"}</text>
+        <text fg={theme().text}>
+          <b>{USAGE_SECTION_TITLE}</b>
+        </text>
+      </box>
       <Show when={!collapsed()}>
         <Show
           when={model.status() === "ready"}
@@ -43,6 +47,9 @@ function Section(props: { api: TuiPluginApi; session_id: string }) {
               </box>
             )}
           </For>
+          <Show when={model.includesSubagents()}>
+            <text fg={theme().textMuted}>{USAGE_SUBAGENTS_TEXT}</text>
+          </Show>
         </Show>
       </Show>
     </box>

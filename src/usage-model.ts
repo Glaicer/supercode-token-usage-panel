@@ -1,18 +1,13 @@
 /**
  * Usage Model — every number, formula and string of the Token Usage section.
  *
- * Folds `step-finish` parts of assistant messages (NOT the message-level
- * `tokens` field, which is a last-step snapshot) into cumulative session
- * totals and exposes ready-to-render rows plus a state flag. Contributions
- * are grouped per provider/model pair already, so a future per-model
- * breakdown reads this map without rewriting the fold.
+ * Reads OpenCode's authoritative session aggregate, which is maintained from
+ * every `step-finish` part, and exposes ready-to-render rows plus a state flag.
+ * The aggregate is not limited by the TUI's 100-message window and correctly
+ * reflects removed parts.
  */
-import { createMemo } from "solid-js";
-import type {
-  AssistantMessage,
-  Message,
-  Part,
-} from "@opencode-ai/sdk/v2";
+import { createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
+import type { Session } from "@opencode-ai/sdk/v2";
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 
 export type UsageStatus = "loading" | "empty" | "ready" | "unavailable";
@@ -24,6 +19,9 @@ export interface UsageRow {
 
 export const USAGE_SECTION_TITLE = "Token Usage";
 
+/** Indicator text shown under the rows when descendants contribute. */
+export const USAGE_SUBAGENTS_TEXT = "Including subagents";
+
 /** Row labels in render order — centralized here for future localization. */
 export const USAGE_LABELS = [
   "Input",
@@ -32,7 +30,6 @@ export const USAGE_LABELS = [
   "Cache read",
   "Cache write",
   "Cache rate",
-  "Cost",
 ] as const;
 
 /**
@@ -55,16 +52,6 @@ interface Totals {
   reasoning: number;
   cacheRead: number;
   cacheWrite: number;
-  cost: number;
-}
-
-function emptyTotals(): Totals {
-  return { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-}
-
-/** Grouping key: one bucket per provider/model pair (v2 breakdown seam). */
-function modelKey(message: AssistantMessage): string {
-  return `${message.providerID}/${message.modelID}`;
 }
 
 function allZero(totals: Totals): boolean {
@@ -73,55 +60,23 @@ function allZero(totals: Totals): boolean {
     totals.output === 0 &&
     totals.reasoning === 0 &&
     totals.cacheRead === 0 &&
-    totals.cacheWrite === 0 &&
-    totals.cost === 0
+    totals.cacheWrite === 0
   );
 }
 
-function addInto(target: Totals, source: Totals): Totals {
-  target.input += source.input;
-  target.output += source.output;
-  target.reasoning += source.reasoning;
-  target.cacheRead += source.cacheRead;
-  target.cacheWrite += source.cacheWrite;
-  target.cost += source.cost;
-  return target;
+function safe(value: number | undefined): number {
+  return Number.isFinite(value) ? Math.max(0, value ?? 0) : 0;
 }
 
-/**
- * Fold of ONE session: sum every step-finish part of every assistant message.
- * Multi-step messages contribute ALL their step-finish parts; a message-level
- * snapshot would undercount, which is why parts are the source of truth.
- * Returns undefined when nothing was contributed — zeros are not facts.
- */
-function foldSession(api: TuiPluginApi, sessionID: string): Totals | undefined {
-  const groups = new Map<string, Totals>();
-  const messages: readonly Message[] = api.state.session.messages(sessionID);
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    for (const part of api.state.part(message.id) as readonly Part[]) {
-      if (part.type !== "step-finish") continue;
-      const stepFinish = part;
-      let group = groups.get(modelKey(message));
-      if (!group) {
-        group = emptyTotals();
-        groups.set(modelKey(message), group);
-      }
-      addInto(group, {
-        input: stepFinish.tokens.input,
-        output: stepFinish.tokens.output,
-        reasoning: stepFinish.tokens.reasoning,
-        cacheRead: stepFinish.tokens.cache.read,
-        cacheWrite: stepFinish.tokens.cache.write,
-        cost: stepFinish.cost,
-      });
-    }
-  }
-  if (groups.size === 0) return undefined;
-  const totals = emptyTotals();
-  for (const group of groups.values()) addInto(totals, group);
-  if (allZero(totals)) return undefined;
-  return totals;
+function totalsFromSession(session: Session | undefined): Totals | undefined {
+  if (!session?.tokens) return undefined;
+  return {
+    input: safe(session.tokens.input),
+    output: safe(session.tokens.output),
+    reasoning: safe(session.tokens.reasoning),
+    cacheRead: safe(session.tokens.cache.read),
+    cacheWrite: safe(session.tokens.cache.write),
+  };
 }
 
 function groupDigits(value: number): string {
@@ -132,11 +87,7 @@ export function formatTokens(value: number): string {
   return groupDigits(value);
 }
 
-function formatCost(value: number): string {
-  return `$${value.toFixed(2)}`;
-}
-
-/** Cache rate repeats Kilo's formula over three disjoint billing buckets. */
+/** Share of all prompt tokens that the provider served from cache. */
 function formatCacheRate(totals: Totals): string {
   const denominator = totals.input + totals.cacheRead + totals.cacheWrite;
   if (denominator <= 0) return USAGE_DASH;
@@ -154,7 +105,6 @@ const ROW_BUILDERS: readonly {
   { label: USAGE_LABELS[3], value: (t) => formatTokens(t.cacheRead) },
   { label: USAGE_LABELS[4], value: (t) => formatTokens(t.cacheWrite) },
   { label: USAGE_LABELS[5], value: formatCacheRate },
-  { label: USAGE_LABELS[6], value: (t) => formatCost(t.cost) },
 ];
 
 function buildRows(totals: Totals): UsageRow[] {
@@ -164,29 +114,164 @@ function buildRows(totals: Totals): UsageRow[] {
 export interface UsageModel {
   status: () => UsageStatus;
   rows: () => readonly UsageRow[];
+  /** True when descendant sessions contribute to the totals. */
+  includesSubagents: () => boolean;
+}
+
+function addTotals(target: Totals, source: Totals): void {
+  target.input += source.input;
+  target.output += source.output;
+  target.reasoning += source.reasoning;
+  target.cacheRead += source.cacheRead;
+  target.cacheWrite += source.cacheWrite;
+}
+
+interface FamilyResult {
+  totals?: Totals;
+  /** True when at least one descendant session contributed. */
+  hasDescendants: boolean;
+  /** Root plus every discovered descendant — the refresh filter set. */
+  members: ReadonlySet<string>;
 }
 
 /**
- * Usage Model over the reactive TUI state. The fold re-runs whenever the
- * session id or the underlying messages/parts change; incremental
- * accumulation keyed by partID replaces the refold in ticket 02 without
- * changing this surface.
+ * Fetches the root session, then walks its descendants breadth-first via
+ * `session.children`. The visited set guards against duplicate listing (a
+ * session reported as a child twice, or a cycle) so no usage is double-counted.
+ * Any failed fetch fails the whole walk — a partial sum would understate.
+ */
+async function fetchFamily(
+  client: TuiPluginApi["client"],
+  rootID: string,
+): Promise<FamilyResult> {
+  const root = (await client.session.get({ sessionID: rootID }, { throwOnError: true })).data;
+  const rootTotals = totalsFromSession(root);
+  if (!rootTotals) return { hasDescendants: false, members: new Set([rootID]) };
+  const totals = { ...rootTotals };
+  let hasDescendants = false;
+
+  const queue = [rootID];
+  const visited = new Set<string>([rootID]);
+  while (queue.length > 0) {
+    const parent = queue.shift() as string;
+    const kids = (await client.session.children({ sessionID: parent }, { throwOnError: true })).data;
+    for (const kid of kids) {
+      if (visited.has(kid.id)) continue;
+      visited.add(kid.id);
+      hasDescendants = true;
+      const kidTotals = totalsFromSession(kid);
+      if (kidTotals) addTotals(totals, kidTotals);
+      queue.push(kid.id);
+    }
+  }
+  return { totals, hasDescendants, members: visited };
+}
+
+/**
+ * Usage Model over OpenCode's session aggregate. The TUI session list can lag
+ * while a response is running, so usage-changing events trigger a fresh local
+ * API read; request sequencing prevents slower responses from winning.
+ * Totals cover the current session plus all of its descendants (subagents).
  */
 export function createUsageModel(api: TuiPluginApi, sessionId: () => string): UsageModel {
-  // "loading" exists for async folds (ticket 02); today's fold is synchronous,
-  // so observers see it only before the first read of these memos.
-  const snapshot = createMemo<{ status: UsageStatus; rows: readonly UsageRow[] }>(() => {
+  const [remote, setRemote] = createSignal<{
+    sessionID: string;
+    totals?: Totals;
+    hasDescendants: boolean;
+    failed: boolean;
+  }>();
+  let request = 0;
+  /** Sessions of the last confirmed family walk; membership-filtered events. */
+  let members: ReadonlySet<string> = new Set();
+
+  const refresh = (sessionID: string) => {
+    const current = ++request;
+    void fetchFamily(api.client, sessionID)
+      .then(({ totals, hasDescendants, members: family }) => {
+        if (current !== request || sessionId() !== sessionID) return;
+        members = family;
+        setRemote({ sessionID, totals, hasDescendants, failed: !totals });
+      })
+      .catch(() => {
+        if (current !== request || sessionId() !== sessionID) return;
+        setRemote((previous) =>
+          previous?.sessionID === sessionID && previous.totals
+            ? { ...previous, failed: true }
+            : { sessionID, hasDescendants: false, failed: true },
+        );
+      });
+  };
+
+  createEffect(() => {
+    const sessionID = sessionId();
+    members = new Set([sessionID]);
+    setRemote(undefined);
+    untrack(() => refresh(sessionID));
+  });
+
+  const refreshCurrent = (sessionID: string) => {
+    if (sessionID === sessionId() || members.has(sessionID)) refresh(sessionId());
+  };
+  /** A new session anywhere might be a descendant — membership is unconfirmed until the walk. */
+  const offSessionCreated = api.event.on("session.created", () => {
+    refreshCurrent(sessionId());
+  });
+  const offSessionDeleted = api.event.on("session.deleted", (event) => {
+    refreshCurrent(event.properties.sessionID);
+  });
+  const offPartUpdated = api.event.on("message.part.updated", (event) => {
+    if (event.properties.part.type === "step-finish") {
+      refreshCurrent(event.properties.part.sessionID);
+    }
+  });
+  const offPartRemoved = api.event.on("message.part.removed", (event) => {
+    refreshCurrent(event.properties.sessionID);
+  });
+  const offMessageRemoved = api.event.on("message.removed", (event) => {
+    refreshCurrent(event.properties.sessionID);
+  });
+  const offSessionUpdated = api.event.on("session.updated", (event) => {
+    refreshCurrent(event.properties.info.id);
+  });
+  onCleanup(() => {
+    request++;
+    offSessionCreated();
+    offSessionDeleted();
+    offPartUpdated();
+    offPartRemoved();
+    offMessageRemoved();
+    offSessionUpdated();
+  });
+
+  const snapshot = createMemo<
+    { status: UsageStatus; rows: readonly UsageRow[]; hasDescendants: boolean }
+  >(() => {
     try {
-      const totals = foldSession(api, sessionId());
-      if (!totals) return { status: "empty", rows: [] };
-      return { status: "ready", rows: buildRows(totals) };
+      const sessionID = sessionId();
+      const loaded = remote();
+      const totals =
+        loaded?.sessionID === sessionID && loaded.totals
+          ? loaded.totals
+          : totalsFromSession(api.state.session.get(sessionID));
+      const hasDescendants = loaded?.sessionID === sessionID
+        ? loaded.hasDescendants
+        : false;
+      if (!totals) {
+        return {
+          status: loaded?.sessionID === sessionID && loaded.failed ? "unavailable" : "loading",
+          rows: [],
+          hasDescendants: false,
+        };
+      }
+      if (allZero(totals)) return { status: "empty", rows: [], hasDescendants: false };
+      return { status: "ready", rows: buildRows(totals), hasDescendants };
     } catch {
-      // Initial fold failed wholesale: unavailability, never zero-as-fact.
-      return { status: "unavailable", rows: [] };
+      return { status: "unavailable", rows: [], hasDescendants: false };
     }
   });
   return {
     status: () => snapshot().status,
     rows: () => snapshot().rows,
+    includesSubagents: () => snapshot().hasDescendants,
   };
 }

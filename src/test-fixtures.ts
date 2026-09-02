@@ -18,7 +18,6 @@ export interface ExpectedTotals {
   reasoning: number;
   cacheRead: number;
   cacheWrite: number;
-  cost: number;
   denominator: number;
 }
 
@@ -51,7 +50,7 @@ function assertObject(value: unknown, what: string): Record<string, unknown> {
 
 function parseAssistantMessage(raw: unknown, sid: string): AssistantMessage {
   const m = assertObject(raw, `session ${sid} message`)
-  for (const key of ["id", "role", "providerID", "modelID", "time", "cost", "tokens"]) {
+  for (const key of ["id", "role", "providerID", "modelID", "time", "tokens"]) {
     if (!(key in m)) throw new Error(`fixture: assistant message missing ${key} in ${sid}`)
   }
   return m as unknown as AssistantMessage
@@ -70,7 +69,7 @@ function parseStepFinish(raw: unknown, mid: string): StepFinishPart {
   if (p["type"] !== "step-finish") {
     throw new Error(`fixture: unexpected non-step-finish part kept for ${mid}`)
   }
-  for (const key of ["id", "messageID", "sessionID", "cost", "tokens"]) {
+  for (const key of ["id", "messageID", "sessionID", "tokens"]) {
     if (!(key in p)) throw new Error(`fixture: step-finish part missing ${key} of ${mid}`)
   }
   return p as unknown as StepFinishPart

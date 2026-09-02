@@ -2,7 +2,7 @@
   "provenance": {
     "db": "~/.local/share/opencode/opencode.db (read-only)",
     "extracted": "2026-08-24",
-    "trimming": "messages keep only fields read by the usage model (user: id/sessionID/role/time.created; assistant adds providerID/modelID/parentID/time.completed/cost/tokens snapshot); only step-finish parts are kept; everything else dropped"
+    "trimming": "messages keep only fields read by the usage model (user: id/sessionID/role/time.created; assistant adds providerID/modelID/parentID/time.completed/tokens snapshot); only step-finish parts are kept; everything else dropped"
   },
   "expected": {
     "ses_0dc2bb655ffeuhvaKtIFLQKpog": {
@@ -11,7 +11,6 @@
       "reasoning": 40717,
       "cacheRead": 2202512,
       "cacheWrite": 0,
-      "cost": 1.89103412,
       "denominator": 2851949
     },
     "ses_fd3844d18ffeAB6W4jxWvqUPfx": {
@@ -20,7 +19,6 @@
       "reasoning": 0,
       "cacheRead": 0,
       "cacheWrite": 0,
-      "cost": 0.0,
       "denominator": 0
     }
   },
@@ -46,7 +44,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.0267216,
           "tokens": {
             "input": 18342,
             "output": 33,
@@ -68,7 +65,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.01021524,
           "tokens": {
             "input": 2901,
             "output": 252,
@@ -90,7 +86,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.0066512,
           "tokens": {
             "input": 684,
             "output": 46,
@@ -112,7 +107,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.0075012,
           "tokens": {
             "input": 1012,
             "output": 63,
@@ -134,7 +128,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.01306316,
           "tokens": {
             "input": 4655,
             "output": 67,
@@ -156,7 +149,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.0263748,
           "tokens": {
             "input": 15002,
             "output": 100,
@@ -178,7 +170,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.01122956,
           "tokens": {
             "input": 1321,
             "output": 82,
@@ -200,7 +191,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.00969596,
           "tokens": {
             "input": 475,
             "output": 33,
@@ -222,7 +212,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.011768,
           "tokens": {
             "input": 1164,
             "output": 114,
@@ -244,7 +233,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.01147712,
           "tokens": {
             "input": 626,
             "output": 93,
@@ -266,7 +254,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.02170804,
           "tokens": {
             "input": 1465,
             "output": 534,
@@ -288,7 +275,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.01771572,
           "tokens": {
             "input": 2491,
             "output": 92,
@@ -310,7 +296,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.01279844,
           "tokens": {
             "input": 1519,
             "output": 58,
@@ -332,7 +317,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.02328092,
           "tokens": {
             "input": 1045,
             "output": 802,
@@ -354,7 +338,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.02644036,
           "tokens": {
             "input": 2571,
             "output": 186,
@@ -376,7 +359,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.07799634,
           "tokens": {
             "input": 48366,
             "output": 2332,
@@ -398,7 +380,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23d449b6001dcLQQwBXNkPylF",
-          "cost": 0.02613876,
           "tokens": {
             "input": 6013,
             "output": 1179,
@@ -428,7 +409,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23db757c0010LGx2mlmXVT1PU",
-          "cost": 0.01631664,
           "tokens": {
             "input": 1496,
             "output": 82,
@@ -450,7 +430,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23db757c0010LGx2mlmXVT1PU",
-          "cost": 0.01435412,
           "tokens": {
             "input": 323,
             "output": 49,
@@ -472,7 +451,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23db757c0010LGx2mlmXVT1PU",
-          "cost": 0.01435688,
           "tokens": {
             "input": 180,
             "output": 70,
@@ -494,7 +472,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23db757c0010LGx2mlmXVT1PU",
-          "cost": 0.02434116,
           "tokens": {
             "input": 1307,
             "output": 1957,
@@ -516,7 +493,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23db757c0010LGx2mlmXVT1PU",
-          "cost": 0.02050256,
           "tokens": {
             "input": 2036,
             "output": 161,
@@ -538,7 +514,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23db757c0010LGx2mlmXVT1PU",
-          "cost": 0.01887016,
           "tokens": {
             "input": 944,
             "output": 114,
@@ -560,7 +535,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23db757c0010LGx2mlmXVT1PU",
-          "cost": 0.01706832,
           "tokens": {
             "input": 754,
             "output": 234,
@@ -582,7 +556,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23db757c0010LGx2mlmXVT1PU",
-          "cost": 0.01656812,
           "tokens": {
             "input": 677,
             "output": 154,
@@ -612,7 +585,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.0656997,
           "tokens": {
             "input": 46702,
             "output": 67,
@@ -634,7 +606,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.09737524,
           "tokens": {
             "input": 59131,
             "output": 527,
@@ -656,7 +627,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.02090412,
           "tokens": {
             "input": 3623,
             "output": 13,
@@ -678,7 +648,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.06758336,
           "tokens": {
             "input": 1788,
             "output": 161,
@@ -700,7 +669,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.061299,
           "tokens": {
             "input": 15973,
             "output": 105,
@@ -722,7 +690,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.05516612,
           "tokens": {
             "input": 5813,
             "output": 207,
@@ -744,7 +711,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.228058,
           "tokens": {
             "input": 82935,
             "output": 25440,
@@ -766,7 +732,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.07171132,
           "tokens": {
             "input": 33671,
             "output": 171,
@@ -788,7 +753,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.03638436,
           "tokens": {
             "input": 611,
             "output": 145,
@@ -810,7 +774,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.05198648,
           "tokens": {
             "input": 1050,
             "output": 151,
@@ -832,7 +795,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.08659492,
           "tokens": {
             "input": 4325,
             "output": 11051,
@@ -854,7 +816,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.19175074,
           "tokens": {
             "input": 125283,
             "output": 3639,
@@ -876,7 +837,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.20641924,
           "tokens": {
             "input": 140197,
             "output": 430,
@@ -898,7 +858,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.04152304,
           "tokens": {
             "input": 2252,
             "output": 340,
@@ -920,7 +879,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.040898,
           "tokens": {
             "input": 424,
             "output": 409,
@@ -942,7 +900,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.04001444,
           "tokens": {
             "input": 699,
             "output": 313,
@@ -964,7 +921,6 @@
           "providerID": "opencode-go",
           "modelID": "glm-5.2",
           "parentID": "msg_f23ecc232001u5nXbDz2J4mN5h",
-          "cost": 0.04451166,
           "tokens": {
             "input": 7591,
             "output": 220,
@@ -984,7 +940,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.0267216,
             "tokens": {
               "input": 18342,
               "output": 33,
@@ -1003,7 +958,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.01021524,
             "tokens": {
               "input": 2901,
               "output": 252,
@@ -1022,7 +976,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.0066512,
             "tokens": {
               "input": 684,
               "output": 46,
@@ -1041,7 +994,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.0075012,
             "tokens": {
               "input": 1012,
               "output": 63,
@@ -1060,7 +1012,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.01306316,
             "tokens": {
               "input": 4655,
               "output": 67,
@@ -1079,7 +1030,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.0263748,
             "tokens": {
               "input": 15002,
               "output": 100,
@@ -1098,7 +1048,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.01122956,
             "tokens": {
               "input": 1321,
               "output": 82,
@@ -1117,7 +1066,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.00969596,
             "tokens": {
               "input": 475,
               "output": 33,
@@ -1136,7 +1084,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.011768,
             "tokens": {
               "input": 1164,
               "output": 114,
@@ -1155,7 +1102,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.01147712,
             "tokens": {
               "input": 626,
               "output": 93,
@@ -1174,7 +1120,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.02170804,
             "tokens": {
               "input": 1465,
               "output": 534,
@@ -1193,7 +1138,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.01771572,
             "tokens": {
               "input": 2491,
               "output": 92,
@@ -1212,7 +1156,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.01279844,
             "tokens": {
               "input": 1519,
               "output": 58,
@@ -1231,7 +1174,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.02328092,
             "tokens": {
               "input": 1045,
               "output": 802,
@@ -1250,7 +1192,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.02644036,
             "tokens": {
               "input": 2571,
               "output": 186,
@@ -1269,7 +1210,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.07799634,
             "tokens": {
               "input": 48366,
               "output": 2332,
@@ -1288,7 +1228,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "stop",
-            "cost": 0.02613876,
             "tokens": {
               "input": 6013,
               "output": 1179,
@@ -1307,7 +1246,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.01631664,
             "tokens": {
               "input": 1496,
               "output": 82,
@@ -1326,7 +1264,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.01435412,
             "tokens": {
               "input": 323,
               "output": 49,
@@ -1345,7 +1282,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.01435688,
             "tokens": {
               "input": 180,
               "output": 70,
@@ -1364,7 +1300,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.02434116,
             "tokens": {
               "input": 1307,
               "output": 1957,
@@ -1383,7 +1318,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.02050256,
             "tokens": {
               "input": 2036,
               "output": 161,
@@ -1402,7 +1336,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.01887016,
             "tokens": {
               "input": 944,
               "output": 114,
@@ -1421,7 +1354,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.01706832,
             "tokens": {
               "input": 754,
               "output": 234,
@@ -1440,7 +1372,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "stop",
-            "cost": 0.01656812,
             "tokens": {
               "input": 677,
               "output": 154,
@@ -1459,7 +1390,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.0656997,
             "tokens": {
               "input": 46702,
               "output": 67,
@@ -1478,7 +1408,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.09737524,
             "tokens": {
               "input": 59131,
               "output": 527,
@@ -1497,7 +1426,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.02090412,
             "tokens": {
               "input": 3623,
               "output": 13,
@@ -1516,7 +1444,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.06758336,
             "tokens": {
               "input": 1788,
               "output": 161,
@@ -1535,7 +1462,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.061299,
             "tokens": {
               "input": 15973,
               "output": 105,
@@ -1554,7 +1480,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.05516612,
             "tokens": {
               "input": 5813,
               "output": 207,
@@ -1573,7 +1498,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.228058,
             "tokens": {
               "input": 82935,
               "output": 25440,
@@ -1592,7 +1516,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.07171132,
             "tokens": {
               "input": 33671,
               "output": 171,
@@ -1611,7 +1534,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.03638436,
             "tokens": {
               "input": 611,
               "output": 145,
@@ -1630,7 +1552,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.05198648,
             "tokens": {
               "input": 1050,
               "output": 151,
@@ -1649,7 +1570,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.08659492,
             "tokens": {
               "input": 4325,
               "output": 11051,
@@ -1668,7 +1588,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.19175074,
             "tokens": {
               "input": 125283,
               "output": 3639,
@@ -1687,7 +1606,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.20641924,
             "tokens": {
               "input": 140197,
               "output": 430,
@@ -1706,7 +1624,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.04152304,
             "tokens": {
               "input": 2252,
               "output": 340,
@@ -1725,7 +1642,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.040898,
             "tokens": {
               "input": 424,
               "output": 409,
@@ -1744,7 +1660,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "tool-calls",
-            "cost": 0.04001444,
             "tokens": {
               "input": 699,
               "output": 313,
@@ -1763,7 +1678,6 @@
             "sessionID": "ses_0dc2bb655ffeuhvaKtIFLQKpog",
             "type": "step-finish",
             "reason": "stop",
-            "cost": 0.04451166,
             "tokens": {
               "input": 7591,
               "output": 220,

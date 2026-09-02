@@ -1,5 +1,5 @@
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
-import type { Message, Part } from "@opencode-ai/sdk/v2";
+import type { Message, Part, Session } from "@opencode-ai/sdk/v2";
 import { createSignal } from "solid-js";
 
 /**
@@ -15,10 +15,75 @@ import { createSignal } from "solid-js";
 export interface FakeStore {
   sessions: Map<string, readonly Message[]>;
   parts: Map<string, readonly Part[]>;
+  stateUsage?: Map<string, FakeUsage>;
+  serverUsage?: Map<string, FakeUsage>;
+  /** Direct children by sessionID — what client.session.children returns. */
+  children?: Map<string, readonly string[]>;
+  /** Sessions that fail session.get / session.children (per-request blackholes). */
+  serverFailures?: ReadonlySet<string>;
+  serverError?: boolean;
+}
+
+export interface FakeUsage {
+  tokens: NonNullable<Session["tokens"]>;
 }
 
 function fail(what: string): never {
   throw new Error(`fake-tui-api: ${what} is not implemented`)
+}
+
+/** Reverse lookup: which parent lists this sessionID as its child. */
+function findParentID(
+  children: Map<string, readonly string[]> | undefined,
+  sessionID: string,
+): string | undefined {
+  for (const [parent, kids] of children ?? []) {
+    if (kids.includes(sessionID)) return parent;
+  }
+  return undefined;
+}
+
+function deriveUsage(store: FakeStore, sessionID: string): FakeUsage | undefined {
+  const messages = store.sessions.get(sessionID);
+  if (!messages) return undefined;  const usage: FakeUsage = {
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  };
+  for (const message of messages) {
+    for (const part of store.parts.get(message.id) ?? []) {
+      if (part.type !== "step-finish") continue;
+      usage.tokens.input += part.tokens.input;
+      usage.tokens.output += part.tokens.output;
+      usage.tokens.reasoning += part.tokens.reasoning;
+      usage.tokens.cache.read += part.tokens.cache.read;
+      usage.tokens.cache.write += part.tokens.cache.write;
+    }
+  }
+  return usage;
+}
+
+function makeSession(
+  store: FakeStore,
+  sessionID: string,
+  source: "state" | "server",
+  parentID?: string,
+): Session | undefined {
+  const usage =
+    (source === "server" ? store.serverUsage?.get(sessionID) : undefined) ??
+    store.stateUsage?.get(sessionID) ??
+    deriveUsage(store, sessionID);
+  if (!usage) return undefined;
+  return {
+    id: sessionID,
+    slug: sessionID,
+    projectID: "project-test",
+    directory: "/",
+    title: sessionID,
+    version: "0.0.0-test",
+    ...(parentID ? { parentID } : {}),
+    time: { created: 0, updated: 0 },
+    cost: 0,
+    tokens: structuredClone(usage.tokens),
+  };
 }
 
 function makeState(get: () => FakeStore): TuiPluginApi["state"] {
@@ -35,7 +100,7 @@ function makeState(get: () => FakeStore): TuiPluginApi["state"] {
     vcs: undefined,
     session: {
       count: () => store().sessions.size,
-      get: () => undefined,
+      get: (sessionID) => makeSession(store(), sessionID, "state"),
       diff: () => [],
       todo: () => [],
       messages: (sessionID) => {
@@ -216,7 +281,34 @@ export function createFakeTuiApi(initial: FakeStore): FakeTuiApi {
     // top-level shape stays checked by the TuiPluginApi annotation above.
     keymap: {} as TuiPluginApi["keymap"],
     renderer: {} as TuiPluginApi["renderer"],
-    client: {} as TuiPluginApi["client"],
+    client: {
+      session: {
+        get: async ({ sessionID }: { sessionID: string }) => {
+          if (store().serverError || store().serverFailures?.has(sessionID)) {
+            throw new Error("fake-tui-api: session.get failed");
+          }
+          return {
+            data: makeSession(
+              store(),
+              sessionID,
+              "server",
+              findParentID(store().children, sessionID),
+            ),
+          };
+        },
+        children: async ({ sessionID }: { sessionID: string }) => {
+          if (store().serverError || store().serverFailures?.has(sessionID)) {
+            throw new Error("fake-tui-api: session.children failed");
+          }
+          const kids = store().children?.get(sessionID) ?? [];
+          return {
+            data: kids.map((kid) =>
+              makeSession(store(), kid, "server", findParentID(store().children, kid)),
+            ),
+          };
+        },
+      },
+    } as unknown as TuiPluginApi["client"],
     tuiConfig: {} as TuiPluginApi["tuiConfig"],
     slots: {
       register: () => fail("slots.register"),
