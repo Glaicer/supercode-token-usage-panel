@@ -11,6 +11,8 @@ TUI-плагин OpenCode: складная секция `Token Usage` в сай
   Cache read                 0
   Cache write                0
   Cache rate              0.0%
+  Generation speed        53 tps
+  Time to first token       4.3s
   Including subagents
 ```
 
@@ -28,6 +30,13 @@ TUI-плагин OpenCode: складная секция `Token Usage` в сай
    локальный API; все формулы и форматирование здесь же.
    `Cache rate = read / (input + read + write)` — при нулевом знаменателе прочерк;
    недоступное значение — тоже прочерк, никогда `NaN`/ноль-как-факт.
+   `Generation speed` — взвешенное отношение output+reasoning токенов ко времени хода
+   без TTFT и завершённых tool-вызовов; `Time to first token` — среднее первого
+   text/reasoning по завершённым ассистентским сообщениям семьи. Во время видимого
+   стрима открытой сессии строки временно показывают `Live speed ~N tps` и растущую
+   границу TTFT. Оценка
+   обновляется раз в секунду по Unicode code points и неперсистентной per-model
+   калибровке; live-стримы сабагентов и tool-call-only генерация не смешиваются.
    Если потомки дали вклад, под строками появляется `Including subagents`.
 2. **View** (`usage-panel.tsx`) — только JSX: заголовок со стрелкой (клик сворачивает,
    по умолчанию развёрнуто), строки `label ⟷ value`, значения прижаты вправо

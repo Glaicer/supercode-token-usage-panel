@@ -1,13 +1,12 @@
 /**
  * Usage Model — every number, formula and string of the Token Usage section.
  *
- * Reads OpenCode's authoritative session aggregate, which is maintained from
- * every `step-finish` part, and exposes ready-to-render rows plus a state flag.
- * The aggregate is not limited by the TUI's 100-message window and correctly
- * reflects removed parts.
+ * Reads OpenCode's authoritative session aggregate and family message history,
+ * folds completed speed/TTFT, and estimates the current visible stream from
+ * deltas. Exposes only ready-to-render rows plus a state flag.
  */
 import { createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
-import type { Session } from "@opencode-ai/sdk/v2";
+import type { AssistantMessage, Message, Part, Session } from "@opencode-ai/sdk/v2";
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 
 export type UsageStatus = "loading" | "empty" | "ready" | "unavailable";
@@ -30,6 +29,8 @@ export const USAGE_LABELS = [
   "Cache read",
   "Cache write",
   "Cache rate",
+  "Generation speed",
+  "Time to first token",
 ] as const;
 
 /**
@@ -52,6 +53,41 @@ interface Totals {
   reasoning: number;
   cacheRead: number;
   cacheWrite: number;
+}
+
+interface CompletedMetrics {
+  generated: number;
+  decodeMs: number;
+  ttftMs: number;
+  ttftCount: number;
+  calibrations: Map<string, { chars: number; tokens: number }>;
+}
+
+interface LiveSpeedState {
+  messageID: string;
+  partID: string;
+  startedAt: number;
+  now: number;
+  chars: number;
+  displayedChars: number;
+  charsPerToken: number;
+  hasTicked: boolean;
+}
+
+interface LiveTtftState {
+  messageID: string;
+  createdAt: number;
+  now: number;
+}
+
+function emptyMetrics(): CompletedMetrics {
+  return {
+    generated: 0,
+    decodeMs: 0,
+    ttftMs: 0,
+    ttftCount: 0,
+    calibrations: new Map(),
+  };
 }
 
 function allZero(totals: Totals): boolean {
@@ -107,8 +143,76 @@ const ROW_BUILDERS: readonly {
   { label: USAGE_LABELS[5], value: formatCacheRate },
 ];
 
-function buildRows(totals: Totals): UsageRow[] {
+function positive(value: number): boolean {
+  return Number.isFinite(value) && value > 0;
+}
+
+function formatGenerationSpeed(metrics: CompletedMetrics | undefined): string {
+  if (!metrics || !positive(metrics.generated) || !positive(metrics.decodeMs)) return USAGE_DASH;
+  const value = metrics.generated / (metrics.decodeMs / 1_000);
+  const rounded = Math.round(value);
+  return positive(rounded) ? `${rounded} tps` : USAGE_DASH;
+}
+
+function formatTtft(metrics: CompletedMetrics | undefined): string {
+  if (!metrics || !positive(metrics.ttftMs) || !positive(metrics.ttftCount)) return USAGE_DASH;
+  const value = metrics.ttftMs / metrics.ttftCount / 1_000;
+  return positive(value) ? `${value.toFixed(1)}s` : USAGE_DASH;
+}
+
+function buildUsageRows(totals: Totals): UsageRow[] {
   return ROW_BUILDERS.map(({ label, value }) => ({ label, value: value(totals) }));
+}
+
+function formatLiveSpeed(live: LiveSpeedState): string {
+  if (!live.hasTicked) return `~${USAGE_DASH}`;
+  const elapsed = (live.now - live.startedAt) / 1_000;
+  const value = live.displayedChars / live.charsPerToken / elapsed;
+  const rounded = Math.round(value);
+  return positive(rounded) ? `~${rounded} tps` : USAGE_DASH;
+}
+
+function formatLiveTtft(live: LiveTtftState): string {
+  const value = (live.now - live.createdAt) / 1_000;
+  return positive(value) ? `>${value.toFixed(1)}s` : USAGE_DASH;
+}
+
+function buildDiagnosticRows(
+  metrics: CompletedMetrics | undefined,
+  liveSpeed: LiveSpeedState | undefined,
+  liveTtft: LiveTtftState | undefined,
+): UsageRow[] {
+  return [
+    {
+      label: liveSpeed ? "Live speed" : USAGE_LABELS[6],
+      value: liveSpeed ? formatLiveSpeed(liveSpeed) : formatGenerationSpeed(metrics),
+    },
+    {
+      label: USAGE_LABELS[7],
+      value: liveTtft ? formatLiveTtft(liveTtft) : formatTtft(metrics),
+    },
+  ];
+}
+
+function codePoints(value: string): number {
+  return Array.from(value).length;
+}
+
+function modelKey(message: AssistantMessage): string {
+  return JSON.stringify([message.providerID, message.modelID]);
+}
+
+function addCalibration(
+  calibrations: CompletedMetrics["calibrations"],
+  key: string,
+  chars: number,
+  tokens: number,
+): void {
+  if (!positive(chars) || !positive(tokens)) return;
+  const calibration = calibrations.get(key) ?? { chars: 0, tokens: 0 };
+  calibration.chars += chars;
+  calibration.tokens += tokens;
+  calibrations.set(key, calibration);
 }
 
 export interface UsageModel {
@@ -128,10 +232,81 @@ function addTotals(target: Totals, source: Totals): void {
 
 interface FamilyResult {
   totals?: Totals;
+  metrics: CompletedMetrics;
   /** True when at least one descendant session contributed. */
   hasDescendants: boolean;
   /** Root plus every discovered descendant — the refresh filter set. */
   members: ReadonlySet<string>;
+}
+
+interface MessageWithParts {
+  info: Message;
+  parts: readonly Part[];
+}
+
+function completedMetrics(messages: readonly MessageWithParts[]): CompletedMetrics {
+  const result = emptyMetrics();
+  for (const { info, parts } of messages) {
+    if (info.role !== "assistant") continue;
+    const message = info as AssistantMessage;
+    if (!positive(message.time.completed ?? 0)) continue;
+
+    let stepChars = 0;
+    let stepHasTool = false;
+    for (const part of parts) {
+      if (part.type === "text" || part.type === "reasoning") {
+        if (positive(part.time?.end ?? 0)) stepChars += codePoints(part.text);
+        continue;
+      }
+      if (part.type === "tool") {
+        stepHasTool = true;
+        continue;
+      }
+      if (part.type !== "step-finish") continue;
+      const tokens = part.tokens.output + part.tokens.reasoning;
+      if (!stepHasTool) addCalibration(result.calibrations, modelKey(message), stepChars, tokens);
+      stepChars = 0;
+      stepHasTool = false;
+    }
+
+    const visibleStarts = parts.flatMap((part) => {
+      if (part.type !== "text" && part.type !== "reasoning") return [];
+      if (!part.time || !positive(part.time.start) || !positive(part.time.end ?? 0)) return [];
+      return [part.time.start];
+    });
+    if (visibleStarts.length === 0) continue;
+    const firstVisibleAt = Math.min(...visibleStarts);
+    const ttft = firstVisibleAt - message.time.created;
+    if (!positive(ttft)) continue;
+
+    result.ttftMs += ttft;
+    result.ttftCount++;
+
+    const generated = parts.reduce((sum, part) => {
+      if (part.type !== "step-finish") return sum;
+      return sum + part.tokens.output + part.tokens.reasoning;
+    }, 0);
+    const tools = parts.reduce((sum, part) => {
+      if (part.type !== "tool" || part.state.status !== "completed") return sum;
+      const duration = part.state.time.end - part.state.time.start;
+      return positive(duration) ? sum + duration : sum;
+    }, 0);
+    const decode = (message.time.completed as number) - message.time.created - ttft - tools;
+    if (!positive(generated) || !positive(decode)) continue;
+    result.generated += generated;
+    result.decodeMs += decode;
+  }
+  return result;
+}
+
+function addMetrics(target: CompletedMetrics, source: CompletedMetrics): void {
+  target.generated += source.generated;
+  target.decodeMs += source.decodeMs;
+  target.ttftMs += source.ttftMs;
+  target.ttftCount += source.ttftCount;
+  for (const [key, sourceCalibration] of source.calibrations) {
+    addCalibration(target.calibrations, key, sourceCalibration.chars, sourceCalibration.tokens);
+  }
 }
 
 /**
@@ -146,8 +321,14 @@ async function fetchFamily(
 ): Promise<FamilyResult> {
   const root = (await client.session.get({ sessionID: rootID }, { throwOnError: true })).data;
   const rootTotals = totalsFromSession(root);
-  if (!rootTotals) return { hasDescendants: false, members: new Set([rootID]) };
+  if (!rootTotals) {
+    return { metrics: emptyMetrics(), hasDescendants: false, members: new Set([rootID]) };
+  }
   const totals = { ...rootTotals };
+  const rootMessages = (
+    await client.session.messages({ sessionID: rootID }, { throwOnError: true })
+  ).data;
+  const metrics = completedMetrics(rootMessages);
   let hasDescendants = false;
 
   const queue = [rootID];
@@ -161,10 +342,14 @@ async function fetchFamily(
       hasDescendants = true;
       const kidTotals = totalsFromSession(kid);
       if (kidTotals) addTotals(totals, kidTotals);
+      const kidMessages = (
+        await client.session.messages({ sessionID: kid.id }, { throwOnError: true })
+      ).data;
+      addMetrics(metrics, completedMetrics(kidMessages));
       queue.push(kid.id);
     }
   }
-  return { totals, hasDescendants, members: visited };
+  return { totals, metrics, hasDescendants, members: visited };
 }
 
 /**
@@ -177,20 +362,76 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   const [remote, setRemote] = createSignal<{
     sessionID: string;
     totals?: Totals;
+    metrics?: CompletedMetrics;
     hasDescendants: boolean;
     failed: boolean;
   }>();
+  const [liveSpeed, setLiveSpeed] = createSignal<LiveSpeedState>();
+  const [liveTtft, setLiveTtft] = createSignal<LiveTtftState>();
   let request = 0;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let ttftTurns = new Set<string>();
   /** Sessions of the last confirmed family walk; membership-filtered events. */
   let members: ReadonlySet<string> = new Set();
+
+  const stopTimerIfIdle = () => {
+    if (liveSpeed() || liveTtft() || !timer) return;
+    clearInterval(timer);
+    timer = undefined;
+  };
+  const ensureTimer = () => {
+    if (timer) return;
+    timer = setInterval(() => {
+      const now = Date.now();
+      setLiveSpeed((current) =>
+        current && {
+          ...current,
+          now,
+          displayedChars: current.chars,
+          hasTicked: now - current.startedAt >= 1_000,
+        },
+      );
+      setLiveTtft((current) => current && { ...current, now });
+      stopTimerIfIdle();
+    }, 1_000);
+  };
+  const clearLiveSpeed = () => {
+    setLiveSpeed(undefined);
+    stopTimerIfIdle();
+  };
+  const clearLiveTtft = () => {
+    setLiveTtft(undefined);
+    stopTimerIfIdle();
+  };
+  const clearProvisional = () => {
+    setLiveSpeed(undefined);
+    setLiveTtft(undefined);
+    if (timer) clearInterval(timer);
+    timer = undefined;
+  };
+  const completedTurns = (sessionID: string): Set<string> => {
+    const turns = new Set<string>();
+    try {
+      for (const message of api.state.session.messages(sessionID)) {
+        if (message.role !== "assistant") continue;
+        const hasFinishedStep = api.state
+          .part(message.id)
+          .some((part) => part.type === "step-finish");
+        if (message.time.completed !== undefined || hasFinishedStep) turns.add(message.parentID);
+      }
+    } catch {
+      // State can be incomplete during a session transition; live events fill it in.
+    }
+    return turns;
+  };
 
   const refresh = (sessionID: string) => {
     const current = ++request;
     void fetchFamily(api.client, sessionID)
-      .then(({ totals, hasDescendants, members: family }) => {
+      .then(({ totals, metrics, hasDescendants, members: family }) => {
         if (current !== request || sessionId() !== sessionID) return;
         members = family;
-        setRemote({ sessionID, totals, hasDescendants, failed: !totals });
+        setRemote({ sessionID, totals, metrics, hasDescendants, failed: !totals });
       })
       .catch(() => {
         if (current !== request || sessionId() !== sessionID) return;
@@ -204,9 +445,13 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
 
   createEffect(() => {
     const sessionID = sessionId();
+    clearProvisional();
     members = new Set([sessionID]);
     setRemote(undefined);
-    untrack(() => refresh(sessionID));
+    untrack(() => {
+      ttftTurns = completedTurns(sessionID);
+      refresh(sessionID);
+    });
   });
 
   const refreshCurrent = (sessionID: string) => {
@@ -217,30 +462,129 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     refreshCurrent(sessionId());
   });
   const offSessionDeleted = api.event.on("session.deleted", (event) => {
+    if (event.properties.sessionID === sessionId() || members.has(event.properties.sessionID)) {
+      clearProvisional();
+    }
     refreshCurrent(event.properties.sessionID);
   });
   const offPartUpdated = api.event.on("message.part.updated", (event) => {
+    const part = event.properties.part;
+    if (
+      part.sessionID === sessionId() &&
+      (part.type === "text" || part.type === "reasoning") &&
+      part.time?.end !== undefined &&
+      liveSpeed()?.partID === part.id
+    ) {
+      clearLiveSpeed();
+    }
     if (event.properties.part.type === "step-finish") {
+      if (
+        event.properties.part.sessionID === sessionId() &&
+        liveTtft()?.messageID === event.properties.part.messageID
+      ) {
+        clearLiveTtft();
+      }
+      if (event.properties.part.sessionID === sessionId()) {
+        const message = api.state.session
+          .messages(sessionId())
+          .find((candidate) => candidate.id === event.properties.part.messageID);
+        if (message?.role === "assistant") ttftTurns.add(message.parentID);
+      }
       refreshCurrent(event.properties.part.sessionID);
     }
   });
   const offPartRemoved = api.event.on("message.part.removed", (event) => {
+    if (event.properties.sessionID === sessionId()) clearProvisional();
     refreshCurrent(event.properties.sessionID);
   });
   const offMessageRemoved = api.event.on("message.removed", (event) => {
+    if (event.properties.sessionID === sessionId()) clearProvisional();
     refreshCurrent(event.properties.sessionID);
   });
   const offSessionUpdated = api.event.on("session.updated", (event) => {
     refreshCurrent(event.properties.info.id);
   });
+  const offMessageUpdated = api.event.on("message.updated", (event) => {
+    const message = event.properties.info;
+    if (event.properties.sessionID !== sessionId() || message.role !== "assistant") return;
+    if (message.time.completed !== undefined) {
+      ttftTurns.add(message.parentID);
+      if (liveTtft()?.messageID === message.id) clearLiveTtft();
+      refreshCurrent(event.properties.sessionID);
+      return;
+    }
+    if (ttftTurns.has(message.parentID)) return;
+    ttftTurns.add(message.parentID);
+    const now = Date.now();
+    setLiveTtft({ messageID: message.id, createdAt: message.time.created, now });
+    ensureTimer();
+  });
+  const offPartDelta = api.event.on("message.part.delta", (event) => {
+    const { sessionID, messageID, partID, field, delta } = event.properties;
+    if (sessionID !== sessionId() || field !== "text") return;
+    let part: Part | undefined;
+    let message: Message | undefined;
+    try {
+      part = api.state.part(messageID).find((candidate) => candidate.id === partID);
+      message = api.state.session.messages(sessionID).find((candidate) => candidate.id === messageID);
+    } catch {
+      return;
+    }
+    if (
+      (part?.type !== "text" && part?.type !== "reasoning") ||
+      part.time?.end !== undefined ||
+      message?.role !== "assistant"
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    const chars = codePoints(delta);
+    setLiveSpeed((current) => {
+      if (current?.partID === partID && current.messageID === messageID) {
+        return { ...current, chars: current.chars + chars };
+      }
+      const calibration = remote()?.metrics?.calibrations.get(modelKey(message));
+      const charsPerToken =
+        (400 + (calibration?.chars ?? 0)) / (100 + (calibration?.tokens ?? 0));
+      return {
+        messageID,
+        partID,
+        startedAt: now,
+        now,
+        chars,
+        displayedChars: 0,
+        charsPerToken,
+        hasTicked: false,
+      };
+    });
+    if (liveTtft()?.messageID === messageID) clearLiveTtft();
+    ensureTimer();
+  });
+  const offServerConnected = api.event.on("server.connected", () => {
+    clearProvisional();
+    refresh(sessionId());
+  });
+  const offSessionError = api.event.on("session.error", (event) => {
+    if (!event.properties.sessionID || event.properties.sessionID === sessionId()) clearProvisional();
+  });
+  const offSessionIdle = api.event.on("session.idle", (event) => {
+    if (event.properties.sessionID === sessionId()) clearProvisional();
+  });
   onCleanup(() => {
     request++;
+    clearProvisional();
     offSessionCreated();
     offSessionDeleted();
     offPartUpdated();
     offPartRemoved();
     offMessageRemoved();
     offSessionUpdated();
+    offMessageUpdated();
+    offPartDelta();
+    offServerConnected();
+    offSessionError();
+    offSessionIdle();
   });
 
   const snapshot = createMemo<
@@ -257,14 +601,28 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
         ? loaded.hasDescendants
         : false;
       if (!totals) {
+        const speed = liveSpeed();
+        const ttft = liveTtft();
+        const diagnostics = speed || ttft ? buildDiagnosticRows(undefined, speed, ttft) : [];
         return {
           status: loaded?.sessionID === sessionID && loaded.failed ? "unavailable" : "loading",
-          rows: [],
+          rows: diagnostics,
           hasDescendants: false,
         };
       }
-      if (allZero(totals)) return { status: "empty", rows: [], hasDescendants: false };
-      return { status: "ready", rows: buildRows(totals), hasDescendants };
+      const metrics = loaded?.sessionID === sessionID ? loaded.metrics : undefined;
+      const speed = liveSpeed();
+      const ttft = liveTtft();
+      if (allZero(totals)) {
+        const diagnostics = speed || ttft ? buildDiagnosticRows(undefined, speed, ttft) : [];
+        return { status: "empty", rows: diagnostics, hasDescendants: false };
+      }
+      const diagnostics = buildDiagnosticRows(metrics, speed, ttft);
+      return {
+        status: "ready",
+        rows: [...buildUsageRows(totals), ...diagnostics],
+        hasDescendants,
+      };
     } catch {
       return { status: "unavailable", rows: [], hasDescendants: false };
     }

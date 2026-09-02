@@ -307,6 +307,18 @@ export function createFakeTuiApi(initial: FakeStore): FakeTuiApi {
             ),
           };
         },
+        messages: async ({ sessionID }: { sessionID: string }) => {
+          if (store().serverError || store().serverFailures?.has(sessionID)) {
+            throw new Error("fake-tui-api: session.messages failed");
+          }
+          const messages = store().sessions.get(sessionID) ?? [];
+          return {
+            data: messages.map((info) => ({
+              info,
+              parts: [...(store().parts.get(info.id) ?? [])],
+            })),
+          };
+        },
       },
     } as unknown as TuiPluginApi["client"],
     tuiConfig: {} as TuiPluginApi["tuiConfig"],

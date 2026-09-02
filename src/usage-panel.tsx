@@ -1,9 +1,9 @@
 /**
  * supercode.token-usage — TUI sidebar section showing the cumulative Token
- * Usage of the current session family: Input, Output, Reasoning, Cache read,
- * Cache write and Cache rate, read from the session aggregates maintained
- * by OpenCode from every `step-finish` part (root plus all subagent
- * descendants; an "Including subagents" hint marks their contribution).
+ * Usage of the current session family: token totals, cache rate, completed
+ * generation speed/TTFT, and provisional diagnostics for the visible stream.
+ * Family totals include all subagent descendants; an "Including subagents"
+ * hint marks their contribution.
  *
  * This file is only the View plus slot registration: it computes no numbers
  * and formats nothing — all logic lives in ./usage-model.ts (the tested seam).
@@ -35,21 +35,19 @@ function Section(props: { api: TuiPluginApi; session_id: string }) {
         </text>
       </box>
       <Show when={!collapsed()}>
-        <Show
-          when={model.status() === "ready"}
-          fallback={<text fg={theme().textMuted}>{USAGE_STATUS_TEXT[model.status()]}</text>}
-        >
-          <For each={model.rows()}>
-            {(row) => (
-              <box flexDirection="row" justifyContent="space-between">
-                <text fg={theme().textMuted}>{row.label}</text>
-                <text fg={theme().text}>{row.value}</text>
-              </box>
-            )}
-          </For>
-          <Show when={model.includesSubagents()}>
-            <text fg={theme().textMuted}>{USAGE_SUBAGENTS_TEXT}</text>
-          </Show>
+        <Show when={model.status() !== "ready"}>
+          <text fg={theme().textMuted}>{USAGE_STATUS_TEXT[model.status()]}</text>
+        </Show>
+        <For each={model.rows()}>
+          {(row) => (
+            <box flexDirection="row" justifyContent="space-between">
+              <text fg={theme().textMuted}>{row.label}</text>
+              <text fg={theme().text}>{row.value}</text>
+            </box>
+          )}
+        </For>
+        <Show when={model.includesSubagents()}>
+          <text fg={theme().textMuted}>{USAGE_SUBAGENTS_TEXT}</text>
         </Show>
       </Show>
     </box>
