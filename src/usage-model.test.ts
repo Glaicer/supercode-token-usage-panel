@@ -11,6 +11,7 @@ import type {
 import {
   USAGE_LABELS,
   USAGE_SECTION_TITLE,
+  USAGE_SECTION_TITLE_WITH_SUBAGENTS,
   createUsageModel,
   formatTokens,
 } from "./usage-model.ts";
@@ -809,6 +810,7 @@ test("positive speeds that round to zero render as unavailable", async (t) => {
 
 test("section title and row labels are pinned", () => {
   assert.equal(USAGE_SECTION_TITLE, "Token Usage");
+  assert.equal(USAGE_SECTION_TITLE_WITH_SUBAGENTS, "Token Usage (including subagents)");
   assert.deepEqual([...USAGE_LABELS], [
     "Input",
     "Output",
@@ -816,20 +818,22 @@ test("section title and row labels are pinned", () => {
     "Cache read",
     "Cache write",
     "Cache rate",
+    "Steps",
     "Session cost",
     "Generation speed",
     "Time to first token",
   ]);
 });
 
-test("real paid session: authoritative totals render exactly", () => {
-  withRoot(() => {
+test("real paid session: authoritative totals render exactly", async () => {
+  await withAsyncRoot(async () => {
     const fake = createFakeTuiApi(fixtureStore(PAID));
     const model = createUsageModel(fake.api, () => PAID);
 
+    await nextTask();
     assert.equal(model.status(), "ready");
     const rows = model.rows();
-    assert.equal(rows.length, 9);
+    assert.equal(rows.length, 10);
     assertLabels(rows);
     assert.equal(rowValue(rows, "Input"), "649,437");
     assert.equal(rowValue(rows, "Output"), "52,276");
@@ -837,6 +841,8 @@ test("real paid session: authoritative totals render exactly", () => {
     assert.equal(rowValue(rows, "Cache read"), "2,202,512");
     assert.equal(rowValue(rows, "Cache write"), "0");
     assert.equal(rowValue(rows, "Cache rate"), "77.2%");
+    // One step-finish part per assistant message in the frozen history.
+    assert.equal(rowValue(rows, "Steps"), "42");
   });
 });
 
@@ -1013,8 +1019,8 @@ test("failed refresh preserves the last confirmed aggregate", async () => {
   });
 });
 
-test("multi-step-finish message: steps sum, the message.tokens snapshot is ignored", () => {
-  withRoot(() => {
+test("multi-step-finish message: steps sum, the message.tokens snapshot is ignored", async () => {
+  await withAsyncRoot(async () => {
     // Two REAL step-finish payloads from two different real messages, placed
     // under one message id: the persisted runtime prunes intermediate
     // step-finishes, so history cannot provide this shape frozen — but the
@@ -1047,10 +1053,13 @@ test("multi-step-finish message: steps sum, the message.tokens snapshot is ignor
       parts: new Map([[messageID, steps]]),
     });
     const model = createUsageModel(fake.api, () => sid);
+    await nextTask();
     assert.equal(model.status(), "ready");
     const rows = model.rows();
     assert.equal(rowValue(rows, "Input"), formatTokens(first.tokens.input + last.tokens.input));
     assert.notEqual(rowValue(rows, "Input"), last.tokens.input.toLocaleString("en-US"));
+    // Two step-finish parts under one message count as two steps.
+    assert.equal(rowValue(rows, "Steps"), "2");
   });
 });
 
@@ -1194,6 +1203,7 @@ test("subagent children: descendant usage merges into the root totals", async ()
     assert.equal(rowValue(rows, "Reasoning"), "5");
     assert.equal(rowValue(rows, "Cache read"), "200");
     assert.equal(rowValue(rows, "Cache write"), "60");
+    assert.equal(rowValue(rows, "Steps"), "2");
     assert.equal(rowValue(rows, "Session cost"), "$3.75");
     assert.equal(rowValue(rows, "Generation speed"), "19 tps");
     assert.equal(rowValue(rows, "Time to first token"), "0.1s");
@@ -1241,6 +1251,45 @@ test("nested subagents: grandchildren contribute through recursion", async () =>
     assert.equal(rowValue(rows, "Input"), "137"); // 100 + 30 + 7
     assert.equal(rowValue(rows, "Output"), "18"); // 10 + 5 + 3
     assert.equal(rowValue(rows, "Reasoning"), "2");
+    assert.ok(model.includesSubagents());
+  });
+});
+
+test("steps: parent and subagent steps sum across the whole family", async () => {
+  await withAsyncRoot(async () => {
+    const sid = "ses_steps_root";
+    const child = "ses_steps_child";
+    const grandchild = "ses_steps_grandchild";
+    const rootMessage = fakeAssistant("msg_steps_root", sid);
+    const childMessage = fakeAssistant("msg_steps_child", child);
+    const grandchildMessage = fakeAssistant("msg_steps_grandchild", grandchild);
+    const usage = {
+      tokens: { input: 10, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const fake = createFakeTuiApi({
+      sessions: new Map([
+        [sid, [rootMessage]],
+        [child, [childMessage]],
+        [grandchild, [grandchildMessage]],
+      ]),
+      parts: new Map([
+        [rootMessage.id, [fakeStepFinish("prt_steps_root", rootMessage.id, sid, usage.tokens)]],
+        [childMessage.id, [
+          fakeStepFinish("prt_steps_child_1", childMessage.id, child, usage.tokens),
+          fakeStepFinish("prt_steps_child_2", childMessage.id, child, usage.tokens),
+        ]],
+        [grandchildMessage.id, [
+          fakeStepFinish("prt_steps_grandchild", grandchildMessage.id, grandchild, usage.tokens),
+        ]],
+      ]),
+      stateUsage: new Map([[sid, usage], [child, usage], [grandchild, usage]]),
+      children: new Map([[sid, [child]], [child, [grandchild]]]),
+    });
+    const model = createUsageModel(fake.api, () => sid);
+    await nextTask();
+    assert.equal(model.status(), "ready");
+    // 1 (root) + 2 (child, two step-finishes in one message) + 1 (grandchild).
+    assert.equal(rowValue(model.rows(), "Steps"), "4");
     assert.ok(model.includesSubagents());
   });
 });

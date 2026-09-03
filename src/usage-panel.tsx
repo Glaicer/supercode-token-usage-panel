@@ -1,9 +1,10 @@
 /**
  * supercode.token-usage — TUI sidebar section showing the cumulative Token
  * Usage of the current session family: token totals, cache rate, completed
- * generation speed/TTFT, and provisional diagnostics for the visible stream.
- * Family totals include all subagent descendants; an "Including subagents"
- * hint marks their contribution.
+ * step count, generation speed/TTFT, and provisional diagnostics for the
+ * visible stream.
+ * Family totals include all subagent descendants; when they contribute the
+ * section title becomes "Token Usage (including subagents)".
  *
  * This file is only the View plus slot registration: it computes no numbers
  * and formats nothing — all logic lives in ./usage-model.ts (the tested seam).
@@ -16,8 +17,8 @@ import { createSignal, For, Show } from "solid-js";
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import {
   USAGE_SECTION_TITLE,
+  USAGE_SECTION_TITLE_WITH_SUBAGENTS,
   USAGE_STATUS_TEXT,
-  USAGE_SUBAGENTS_TEXT,
   createUsageModel,
 } from "./usage-model.ts";
 
@@ -31,7 +32,7 @@ function Section(props: { api: TuiPluginApi; session_id: string }) {
       <box flexDirection="row" gap={1} onMouseDown={() => setCollapsed(!collapsed())}>
         <text fg={theme().text}>{collapsed() ? "▶" : "▼"}</text>
         <text fg={theme().text}>
-          <b>{USAGE_SECTION_TITLE}</b>
+          <b>{model.includesSubagents() ? USAGE_SECTION_TITLE_WITH_SUBAGENTS : USAGE_SECTION_TITLE}</b>
         </text>
       </box>
       <Show when={!collapsed()}>
@@ -46,9 +47,6 @@ function Section(props: { api: TuiPluginApi; session_id: string }) {
             </box>
           )}
         </For>
-        <Show when={model.includesSubagents()}>
-          <text fg={theme().textMuted}>{USAGE_SUBAGENTS_TEXT}</text>
-        </Show>
       </Show>
     </box>
   );

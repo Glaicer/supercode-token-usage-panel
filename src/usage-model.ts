@@ -2,7 +2,7 @@
  * Usage Model — every number, formula and string of the Token Usage section.
  *
  * Reads OpenCode's authoritative session aggregate and family message history,
- * folds completed speed/TTFT, and estimates the current visible stream from
+ * folds completed steps/speed/TTFT, and estimates the current visible stream from
  * deltas. Exposes only ready-to-render rows plus a state flag.
  */
 import { createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
@@ -18,8 +18,8 @@ export interface UsageRow {
 
 export const USAGE_SECTION_TITLE = "Token Usage";
 
-/** Indicator text shown under the rows when descendants contribute. */
-export const USAGE_SUBAGENTS_TEXT = "Including subagents";
+/** Section title when descendant sessions contribute to the totals. */
+export const USAGE_SECTION_TITLE_WITH_SUBAGENTS = "Token Usage (including subagents)";
 
 /** Row labels in render order — centralized here for future localization. */
 export const USAGE_LABELS = [
@@ -29,6 +29,7 @@ export const USAGE_LABELS = [
   "Cache read",
   "Cache write",
   "Cache rate",
+  "Steps",
   "Session cost",
   "Generation speed",
   "Time to first token",
@@ -62,6 +63,8 @@ interface CompletedMetrics {
   decodeMs: number;
   ttftMs: number;
   ttftCount: number;
+  /** Completed agent steps: one per step-finish part, summed across the family. */
+  steps: number;
   calibrations: Map<string, { chars: number; tokens: number }>;
 }
 
@@ -88,6 +91,7 @@ function emptyMetrics(): CompletedMetrics {
     decodeMs: 0,
     ttftMs: 0,
     ttftCount: 0,
+    steps: 0,
     calibrations: new Map(),
   };
 }
@@ -149,8 +153,13 @@ const ROW_BUILDERS: readonly {
   { label: USAGE_LABELS[3], value: (t) => formatTokens(t.cacheRead) },
   { label: USAGE_LABELS[4], value: (t) => formatTokens(t.cacheWrite) },
   { label: USAGE_LABELS[5], value: formatCacheRate },
-  { label: USAGE_LABELS[6], value: (t) => formatCost(t.cost) },
 ];
+
+/** Completed agent steps across the family; a dash while history is unloaded. */
+function formatSteps(metrics: CompletedMetrics | undefined): string {
+  if (!metrics || !positive(metrics.steps)) return USAGE_DASH;
+  return formatTokens(metrics.steps);
+}
 
 function positive(value: number): boolean {
   return Number.isFinite(value) && value > 0;
@@ -169,12 +178,17 @@ function formatTtft(metrics: CompletedMetrics | undefined): string {
   return positive(value) ? `${value.toFixed(1)}s` : USAGE_DASH;
 }
 
-function buildUsageRows(totals: Totals): UsageRow[] {
-  return ROW_BUILDERS.map(({ label, value }) => ({ label, value: value(totals) }));
+function buildUsageRows(totals: Totals, metrics: CompletedMetrics | undefined): UsageRow[] {
+  const head = ROW_BUILDERS.map(({ label, value }) => ({ label, value: value(totals) }));
+  return [
+    ...head,
+    { label: USAGE_LABELS[6], value: formatSteps(metrics) },
+    { label: USAGE_LABELS[7], value: formatCost(totals.cost) },
+  ];
 }
 
 function formatLiveSpeed(live: LiveSpeedState): string {
-  if (!live.hasTicked) return `~${USAGE_DASH}`;
+  if (!live.hasTicked) return `${USAGE_DASH}`;
   const elapsed = (live.now - live.startedAt) / 1_000;
   const value = live.displayedChars / live.charsPerToken / elapsed;
   const rounded = Math.round(value);
@@ -193,11 +207,11 @@ function buildDiagnosticRows(
 ): UsageRow[] {
   return [
     {
-      label: liveSpeed ? "Live speed" : USAGE_LABELS[7],
+      label: liveSpeed ? "Live speed" : USAGE_LABELS[8],
       value: liveSpeed ? formatLiveSpeed(liveSpeed) : formatGenerationSpeed(metrics),
     },
     {
-      label: USAGE_LABELS[8],
+      label: USAGE_LABELS[9],
       value: liveTtft ? formatLiveTtft(liveTtft) : formatTtft(metrics),
     },
   ];
@@ -287,6 +301,11 @@ function completedMetrics(messages: readonly MessageWithParts[]): CompletedMetri
   const result = emptyMetrics();
   for (const { info, parts } of messages) {
     if (info.role !== "assistant") continue;
+    // A step-finish part is one completed agent step, even when the parent
+    // message has not been marked completed yet (step-finish race).
+    for (const part of parts) {
+      if (part.type === "step-finish") result.steps++;
+    }
     const message = info as AssistantMessage;
     if (!positive(message.time.completed ?? 0)) continue;
 
@@ -343,6 +362,7 @@ function addMetrics(target: CompletedMetrics, source: CompletedMetrics): void {
   target.decodeMs += source.decodeMs;
   target.ttftMs += source.ttftMs;
   target.ttftCount += source.ttftCount;
+  target.steps += source.steps;
   for (const [key, sourceCalibration] of source.calibrations) {
     addCalibration(target.calibrations, key, sourceCalibration.chars, sourceCalibration.tokens);
   }
@@ -1015,7 +1035,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
       const diagnostics = buildDiagnosticRows(metrics, speed, ttft);
       return {
         status: "ready",
-        rows: [...buildUsageRows(totals), ...diagnostics],
+        rows: [...buildUsageRows(totals, metrics), ...diagnostics],
         hasDescendants,
       };
     } catch {
