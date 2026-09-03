@@ -476,6 +476,8 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   let nextMemberRequest = 0;
   const memberRequests = new Map<string, number>();
   const branchRequests = new Map<string, number>();
+  let appliedRevision = 0;
+  const contributionRevisions = new Map<string, number>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let ttftTurns = new Set<string>();
   /** Sessions of the last confirmed family walk; membership-filtered events. */
@@ -534,17 +536,18 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
 
   const refresh = (sessionID: string) => {
     const current = ++request;
-    const memberVersions = new Map(memberRequests);
+    const startRevision = appliedRevision;
     void fetchFamily(api.client, sessionID)
       .then((family) => {
         if (current !== request || sessionId() !== sessionID) return;
         setRemote((previous) => {
           const contributions = new Map(family.contributions);
           if (previous?.sessionID === sessionID && previous.contributions) {
-            for (const [id, contribution] of previous.contributions) {
-              if (memberRequests.get(id) !== memberVersions.get(id)) {
-                contributions.set(id, contribution);
-              }
+            for (const [id, revision] of contributionRevisions) {
+              if (revision <= startRevision) continue;
+              const contribution = previous.contributions.get(id);
+              if (contribution) contributions.set(id, contribution);
+              else contributions.delete(id);
             }
           }
           if (
@@ -590,6 +593,8 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     members = new Set([sessionID]);
     memberRequests.clear();
     branchRequests.clear();
+    contributionRevisions.clear();
+    appliedRevision = 0;
     setRemote(undefined);
     untrack(() => {
       ttftTurns = completedTurns(sessionID);
@@ -609,6 +614,8 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
       for (const [id, contribution] of additions) contributions.set(id, contribution);
       const aggregate = aggregateContributions(contributions);
       members = aggregate.members;
+      const revision = ++appliedRevision;
+      for (const id of additions.keys()) contributionRevisions.set(id, revision);
       return {
         sessionID: selectedSessionID,
         totals: aggregate.totals,
@@ -645,7 +652,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     const selectedSessionID = sessionId();
     const branchRequest = ++nextMemberRequest;
     branchRequests.set(session.id, branchRequest);
-    const memberVersions = new Map(memberRequests);
+    const startRevision = appliedRevision;
     void fetchBranch(api.client, session)
       .then((branch) => {
         setRemote((previous) => {
@@ -659,18 +666,22 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
             return previous;
           }
           const contributions = new Map(previous.contributions);
+          const changed = new Set<string>();
           for (const id of previous.contributions.keys()) {
             if (
               belongsToBranch(id, session.id, previous.contributions) &&
               !branch.contributions.has(id) &&
-              !belongsToIncompleteBranch(id, branch.incompleteBranches, previous.contributions)
+              !belongsToIncompleteBranch(id, branch.incompleteBranches, previous.contributions) &&
+              (contributionRevisions.get(id) ?? 0) <= startRevision
             ) {
               contributions.delete(id);
+              changed.add(id);
             }
           }
           for (const [id, contribution] of branch.contributions) {
-            if (memberRequests.get(id) === memberVersions.get(id)) {
+            if ((contributionRevisions.get(id) ?? 0) <= startRevision) {
               contributions.set(id, contribution);
+              changed.add(id);
             }
           }
           const incompleteBranches = new Set(previous.incompleteBranches);
@@ -682,6 +693,8 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
           for (const id of branch.incompleteBranches) incompleteBranches.add(id);
           const aggregate = aggregateContributions(contributions, incompleteBranches);
           members = aggregate.members;
+          const revision = ++appliedRevision;
+          for (const id of changed) contributionRevisions.set(id, revision);
           return {
             sessionID: selectedSessionID,
             totals: aggregate.totals,

@@ -1424,6 +1424,39 @@ test("new branch discovery survives a concurrent member update", async () => {
   });
 });
 
+test("failed concurrent member update does not cancel branch contribution", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_failed_creation_race_root";
+    const child = "ses_failed_creation_race_child";
+    const rootUsage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const childUsage = {
+      tokens: { input: 40, output: 4, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const initial = {
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([[root, rootUsage]]),
+    };
+    const fake = createFakeTuiApi(initial);
+    const model = createUsageModel(fake.api, () => root);
+    await nextTask();
+
+    const childInfo = fakeSession(child, root, childUsage);
+    fake.setStore({
+      ...initial,
+      stateUsage: new Map([[root, rootUsage], [child, childUsage]]),
+      serverFailures: new Set([child]),
+    });
+    fake.emit("session.created", { sessionID: child, info: childInfo });
+    fake.emit("session.updated", { sessionID: child, info: childInfo });
+    await nextTask();
+
+    assert.equal(rowValue(model.rows(), "Input"), "140");
+  });
+});
+
 test("events outside the current family do not trigger requests", async () => {
   await withAsyncRoot(async () => {
     const root = "ses_membership_root";
@@ -1641,6 +1674,55 @@ test("slow full refresh cannot overwrite a newer member contribution", async () 
     release();
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "180");
+  });
+});
+
+test("slow full refresh cannot remove a concurrently created branch", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_full_creation_race_root";
+    const child = "ses_full_creation_race_child";
+    const rootUsage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const childUsage = {
+      tokens: { input: 50, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const initial = {
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([[root, rootUsage]]),
+      children: new Map<string, readonly string[]>(),
+    };
+    const fake = createFakeTuiApi(initial);
+    const model = createUsageModel(fake.api, () => root);
+    await nextTask();
+
+    let release = () => {};
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fake.setStore({
+      ...initial,
+      serverDelays: new Map([[`children:${root}`, barrier]]),
+    });
+    fake.emit("server.connected", {});
+    await nextTask();
+
+    fake.setStore({
+      ...initial,
+      stateUsage: new Map([[root, rootUsage], [child, childUsage]]),
+      children: new Map([[root, [child]]]),
+    });
+    fake.emit("session.created", {
+      sessionID: child,
+      info: fakeSession(child, root, childUsage),
+    });
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "150");
+
+    release();
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "150");
   });
 });
 
