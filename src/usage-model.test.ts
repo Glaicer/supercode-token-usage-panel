@@ -1769,6 +1769,84 @@ test("child created during initial family load is applied after the snapshot", a
   });
 });
 
+test("queued startup branch uses updates received before initial load completes", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_initial_update_root";
+    const child = "ses_initial_update_child";
+    const rootUsage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const childUsage = {
+      tokens: { input: 50, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const grownChild = {
+      tokens: { input: 80, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    let release = () => {};
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fake = createFakeTuiApi({
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([[root, rootUsage]]),
+      children: new Map<string, readonly string[]>(),
+      serverDelays: new Map([[`children:${root}`, barrier]]),
+    });
+    const model = createUsageModel(fake.api, () => root);
+    await nextTask();
+
+    fake.emit("session.created", {
+      sessionID: child,
+      info: fakeSession(child, root, childUsage),
+    });
+    fake.emit("session.updated", {
+      sessionID: child,
+      info: fakeSession(child, root, grownChild),
+    });
+    release();
+    await nextTask();
+
+    assert.equal(rowValue(model.rows(), "Input"), "180");
+  });
+});
+
+test("queued startup branch is discarded when deleted before initial load completes", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_initial_delete_root";
+    const child = "ses_initial_delete_child";
+    const rootUsage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const childUsage = {
+      tokens: { input: 50, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    let release = () => {};
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fake = createFakeTuiApi({
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([[root, rootUsage]]),
+      children: new Map<string, readonly string[]>(),
+      serverDelays: new Map([[`children:${root}`, barrier]]),
+    });
+    const model = createUsageModel(fake.api, () => root);
+    await nextTask();
+
+    fake.emit("session.created", {
+      sessionID: child,
+      info: fakeSession(child, root, childUsage),
+    });
+    fake.emit("session.deleted", { sessionID: child, info: undefined });
+    release();
+    await nextTask();
+
+    assert.equal(rowValue(model.rows(), "Input"), "100");
+  });
+});
+
 test("root session switch: family resets, no leakage across roots", async () => {
   await withAsyncRoot(async () => {
     const rootA = "ses_root_a";

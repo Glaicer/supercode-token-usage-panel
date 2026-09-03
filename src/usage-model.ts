@@ -739,10 +739,14 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     addBranch(event.properties.info);
   });
   const offSessionDeleted = api.event.on("session.deleted", (event) => {
-    if (event.properties.sessionID === sessionId() || members.has(event.properties.sessionID)) {
-      clearProvisional();
+    const deletedID = event.properties.sessionID;
+    const tracked = deletedID === sessionId() || members.has(deletedID) || pendingBranches.has(deletedID);
+    pendingBranches.delete(deletedID);
+    if (branchRequests.has(deletedID)) {
+      branchRequests.set(deletedID, ++nextMemberRequest);
     }
-    if (event.properties.sessionID === sessionId() || members.has(event.properties.sessionID)) {
+    if (tracked) {
+      clearProvisional();
       refresh(sessionId());
     }
   });
@@ -782,6 +786,10 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     if (members.has(event.properties.sessionID)) refresh(sessionId());
   });
   const offSessionUpdated = api.event.on("session.updated", (event) => {
+    if (pendingBranches.has(event.properties.info.id)) {
+      pendingBranches.set(event.properties.info.id, event.properties.info);
+      return;
+    }
     if (members.has(event.properties.info.id)) {
       refreshMember(event.properties.info.id);
       retryIncompleteBranches();
