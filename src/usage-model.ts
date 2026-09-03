@@ -579,7 +579,12 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
         });
         const pending = [...pendingBranches.values()];
         pendingBranches.clear();
-        for (const session of pending) refreshBranch(session, true);
+        for (const session of pending) {
+          if (!session.parentID || !members.has(session.parentID) || members.has(session.id)) {
+            continue;
+          }
+          refreshBranch(session, true);
+        }
       })
       .catch(() => {
         if (current !== request || sessionId() !== sessionID) return;
@@ -741,9 +746,22 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   const offSessionDeleted = api.event.on("session.deleted", (event) => {
     const deletedID = event.properties.sessionID;
     const tracked = deletedID === sessionId() || members.has(deletedID) || pendingBranches.has(deletedID);
-    pendingBranches.delete(deletedID);
-    if (branchRequests.has(deletedID)) {
-      branchRequests.set(deletedID, ++nextMemberRequest);
+    const pruned = new Set<string>([deletedID]);
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const [id, session] of pendingBranches) {
+        if (!pruned.has(id) && session.parentID && pruned.has(session.parentID)) {
+          pruned.add(id);
+          expanded = true;
+        }
+      }
+    }
+    for (const id of pruned) {
+      pendingBranches.delete(id);
+      if (branchRequests.has(id)) {
+        branchRequests.set(id, ++nextMemberRequest);
+      }
     }
     if (tracked) {
       clearProvisional();

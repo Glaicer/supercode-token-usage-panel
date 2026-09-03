@@ -1815,11 +1815,15 @@ test("queued startup branch is discarded when deleted before initial load comple
   await withAsyncRoot(async () => {
     const root = "ses_initial_delete_root";
     const child = "ses_initial_delete_child";
+    const grandchild = "ses_initial_delete_grandchild";
     const rootUsage = {
       tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
     };
     const childUsage = {
       tokens: { input: 50, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const grandchildUsage = {
+      tokens: { input: 7, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
     };
     let release = () => {};
     const barrier = new Promise<void>((resolve) => {
@@ -1838,6 +1842,10 @@ test("queued startup branch is discarded when deleted before initial load comple
     fake.emit("session.created", {
       sessionID: child,
       info: fakeSession(child, root, childUsage),
+    });
+    fake.emit("session.created", {
+      sessionID: grandchild,
+      info: fakeSession(grandchild, child, grandchildUsage),
     });
     fake.emit("session.deleted", { sessionID: child, info: undefined });
     release();
