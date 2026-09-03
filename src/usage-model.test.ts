@@ -1308,6 +1308,47 @@ test("live subagent: creation and usage events extend the totals", async () => {
   });
 });
 
+test("new branch discovery survives a concurrent member update", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_creation_race_root";
+    const child = "ses_creation_race_child";
+    const grandchild = "ses_creation_race_grandchild";
+    const rootUsage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const childUsage = {
+      tokens: { input: 40, output: 4, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const grandchildUsage = {
+      tokens: { input: 7, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const initial = {
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([[root, rootUsage]]),
+    };
+    const fake = createFakeTuiApi(initial);
+    const model = createUsageModel(fake.api, () => root);
+    await nextTask();
+
+    fake.setStore({
+      ...initial,
+      stateUsage: new Map([
+        [root, rootUsage],
+        [child, childUsage],
+        [grandchild, grandchildUsage],
+      ]),
+      children: new Map([[root, [child]], [child, [grandchild]]]),
+    });
+    const childInfo = fakeSession(child, root, childUsage);
+    fake.emit("session.created", { sessionID: child, info: childInfo });
+    fake.emit("session.updated", { sessionID: child, info: childInfo });
+    await nextTask();
+
+    assert.equal(rowValue(model.rows(), "Input"), "147");
+  });
+});
+
 test("events outside the current family do not trigger requests", async () => {
   await withAsyncRoot(async () => {
     const root = "ses_membership_root";
@@ -1424,6 +1465,61 @@ test("partial family fetch failure keeps totals from resolved sessions", async (
     // The resolved root and child aggregates still form a useful family total.
     assert.equal(model.status(), "ready");
     assert.equal(rowValue(model.rows(), "Input"), "190");
+  });
+});
+
+test("failed descendant discovery retains known members and retries on invalidation", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_retry_root";
+    const child = "ses_retry_child";
+    const grandchild = "ses_retry_grandchild";
+    const rootUsage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const childUsage = {
+      tokens: { input: 40, output: 4, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const grandchildUsage = {
+      tokens: { input: 7, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const family = {
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([
+        [root, rootUsage],
+        [child, childUsage],
+        [grandchild, grandchildUsage],
+      ]),
+      children: new Map([[root, [child]], [child, [grandchild]]]),
+    };
+    const fake = createFakeTuiApi(family);
+    const model = createUsageModel(fake.api, () => root);
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "147");
+
+    fake.setStore({ ...family, serverFailures: new Set([child]) });
+    fake.emit("server.connected", {});
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "147");
+
+    const grownGrandchild = {
+      tokens: { input: 17, output: 2, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    fake.setStore({
+      ...family,
+      stateUsage: new Map([
+        [root, rootUsage],
+        [child, childUsage],
+        [grandchild, grownGrandchild],
+      ]),
+    });
+    fake.emit("session.updated", {
+      sessionID: root,
+      info: fakeSession(root, undefined, rootUsage),
+    });
+    await nextTask();
+
+    assert.equal(rowValue(model.rows(), "Input"), "157");
   });
 });
 

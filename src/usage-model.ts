@@ -248,11 +248,13 @@ interface FamilyResult {
   /** Root plus every discovered descendant — the refresh filter set. */
   members: ReadonlySet<string>;
   contributions: ReadonlyMap<string, SessionContribution>;
+  incompleteBranches: ReadonlySet<string>;
 }
 
 interface SessionContribution {
   totals?: Totals;
   metrics: CompletedMetrics;
+  parentID?: string;
 }
 
 interface MessageWithParts {
@@ -327,6 +329,7 @@ function addMetrics(target: CompletedMetrics, source: CompletedMetrics): void {
 
 function aggregateContributions(
   contributions: ReadonlyMap<string, SessionContribution>,
+  incompleteBranches: ReadonlySet<string> = new Set(),
 ): FamilyResult {
   let totals: Totals | undefined;
   const metrics = emptyMetrics();
@@ -344,6 +347,7 @@ function aggregateContributions(
     hasDescendants: members.size > 1,
     members,
     contributions,
+    incompleteBranches,
   };
 }
 
@@ -360,7 +364,11 @@ async function fetchContribution(
   } catch {
     // Token and cost aggregates remain useful when diagnostic history is unavailable.
   }
-  return { totals: totalsFromSession(session), metrics };
+  return {
+    totals: totalsFromSession(session),
+    metrics,
+    ...(session.parentID ? { parentID: session.parentID } : {}),
+  };
 }
 
 async function fetchBranch(
@@ -368,6 +376,7 @@ async function fetchBranch(
   root: Session,
 ): Promise<FamilyResult> {
   const contributions = new Map<string, SessionContribution>();
+  const incompleteBranches = new Set<string>();
   const queue = [root];
   const visited = new Set<string>();
   while (queue.length > 0) {
@@ -383,10 +392,26 @@ async function fetchBranch(
         if (kid && !visited.has(kid.id)) queue.push(kid);
       }
     } catch {
+      incompleteBranches.add(session.id);
       // Retry this unresolved branch on the next family invalidation.
     }
   }
-  return aggregateContributions(contributions);
+  return aggregateContributions(contributions, incompleteBranches);
+}
+
+function belongsToIncompleteBranch(
+  sessionID: string,
+  incompleteBranches: ReadonlySet<string>,
+  previous: ReadonlyMap<string, SessionContribution>,
+): boolean {
+  const visited = new Set<string>();
+  let current: string | undefined = sessionID;
+  while (current && !visited.has(current)) {
+    if (incompleteBranches.has(current)) return true;
+    visited.add(current);
+    current = previous.get(current)?.parentID;
+  }
+  return false;
 }
 
 /**
@@ -428,12 +453,14 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     hasDescendants: boolean;
     failed: boolean;
     contributions?: ReadonlyMap<string, SessionContribution>;
+    incompleteBranches?: ReadonlySet<string>;
   }>();
   const [liveSpeed, setLiveSpeed] = createSignal<LiveSpeedState>();
   const [liveTtft, setLiveTtft] = createSignal<LiveTtftState>();
   let request = 0;
   let nextMemberRequest = 0;
   const memberRequests = new Map<string, number>();
+  const branchRequests = new Map<string, number>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let ttftTurns = new Set<string>();
   /** Sessions of the last confirmed family walk; membership-filtered events. */
@@ -493,10 +520,36 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   const refresh = (sessionID: string) => {
     const current = ++request;
     void fetchFamily(api.client, sessionID)
-      .then(({ totals, metrics, hasDescendants, members: family, contributions }) => {
+      .then((family) => {
         if (current !== request || sessionId() !== sessionID) return;
-        members = family;
-        setRemote({ sessionID, totals, metrics, hasDescendants, contributions, failed: !totals });
+        setRemote((previous) => {
+          const contributions = new Map(family.contributions);
+          if (
+            family.incompleteBranches.size > 0 &&
+            previous?.sessionID === sessionID &&
+            previous.contributions
+          ) {
+            for (const [id, contribution] of previous.contributions) {
+              if (
+                !contributions.has(id) &&
+                belongsToIncompleteBranch(id, family.incompleteBranches, previous.contributions)
+              ) {
+                contributions.set(id, contribution);
+              }
+            }
+          }
+          const aggregate = aggregateContributions(contributions, family.incompleteBranches);
+          members = aggregate.members;
+          return {
+            sessionID,
+            totals: aggregate.totals,
+            metrics: aggregate.metrics,
+            hasDescendants: aggregate.hasDescendants,
+            contributions,
+            incompleteBranches: aggregate.incompleteBranches,
+            failed: !aggregate.totals,
+          };
+        });
       })
       .catch(() => {
         if (current !== request || sessionId() !== sessionID) return;
@@ -513,6 +566,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     clearProvisional();
     members = new Set([sessionID]);
     memberRequests.clear();
+    branchRequests.clear();
     setRemote(undefined);
     untrack(() => {
       ttftTurns = completedTurns(sessionID);
@@ -538,6 +592,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
         metrics: aggregate.metrics,
         hasDescendants: aggregate.hasDescendants,
         contributions,
+        incompleteBranches: previous.incompleteBranches,
         failed: !aggregate.totals,
       };
     });
@@ -561,21 +616,42 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
         // Preserve the last confirmed contribution and retry on the next event.
       });
   };
-  const addBranch = (session: Session) => {
-    if (!session.parentID || !members.has(session.parentID) || members.has(session.id)) return;
-    members = new Set([...members, session.id]);
+  const refreshBranch = (session: Session, isNew: boolean) => {
+    if (isNew) members = new Set([...members, session.id]);
     const expectedRequest = request;
     const selectedSessionID = sessionId();
-    const memberRequest = ++nextMemberRequest;
-    memberRequests.set(session.id, memberRequest);
+    const branchRequest = ++nextMemberRequest;
+    branchRequests.set(session.id, branchRequest);
     void fetchBranch(api.client, session)
       .then((branch) => {
-        if (memberRequests.get(session.id) !== memberRequest) return;
+        if (branchRequests.get(session.id) !== branchRequest) return;
         mergeContributions(branch.contributions, expectedRequest, selectedSessionID);
+        setRemote((previous) => {
+          if (previous?.sessionID !== selectedSessionID) return previous;
+          const incompleteBranches = new Set(previous.incompleteBranches);
+          incompleteBranches.delete(session.id);
+          for (const id of branch.incompleteBranches) incompleteBranches.add(id);
+          return { ...previous, incompleteBranches };
+        });
       })
       .catch(() => {
-        members = new Set([...members].filter((id) => id !== session.id));
+        if (isNew) members = new Set([...members].filter((id) => id !== session.id));
       });
+  };
+  const retryIncompleteBranches = () => {
+    for (const sessionID of remote()?.incompleteBranches ?? []) {
+      void api.client.session.get({ sessionID }, { throwOnError: true })
+        .then(({ data }) => {
+          if (data) refreshBranch(data, false);
+        })
+        .catch(() => {
+          // The next invalidation retries again.
+        });
+    }
+  };
+  const addBranch = (session: Session) => {
+    if (!session.parentID || !members.has(session.parentID) || members.has(session.id)) return;
+    refreshBranch(session, true);
   };
   const offSessionCreated = api.event.on("session.created", (event) => {
     addBranch(event.properties.info);
@@ -612,19 +688,24 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
         if (message?.role === "assistant") ttftTurns.add(message.parentID);
       }
       refreshMember(event.properties.part.sessionID);
+      retryIncompleteBranches();
     }
   });
   const offPartRemoved = api.event.on("message.part.removed", (event) => {
     if (event.properties.sessionID === sessionId()) clearProvisional();
-    refreshMember(event.properties.sessionID);
+    if (members.has(event.properties.sessionID)) refresh(sessionId());
   });
   const offMessageRemoved = api.event.on("message.removed", (event) => {
     if (event.properties.sessionID === sessionId()) clearProvisional();
-    refreshMember(event.properties.sessionID);
+    if (members.has(event.properties.sessionID)) refresh(sessionId());
   });
   const offSessionUpdated = api.event.on("session.updated", (event) => {
-    if (members.has(event.properties.info.id)) refreshMember(event.properties.info.id);
-    else addBranch(event.properties.info);
+    if (members.has(event.properties.info.id)) {
+      refreshMember(event.properties.info.id);
+      retryIncompleteBranches();
+      return;
+    }
+    addBranch(event.properties.info);
   });
   const offMessageUpdated = api.event.on("message.updated", (event) => {
     const message = event.properties.info;
