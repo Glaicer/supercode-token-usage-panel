@@ -260,13 +260,22 @@ interface SessionContribution {
 /**
  * One sequencing snapshot shared by a full refresh and the incrementals that
  * race it: which family generation started the work, which session was
- * selected, and which incremental revisions were already applied. A new
- * sequencing dimension lands here, not at every call site.
+ * selected, and which incremental revisions were already applied.
  */
 interface Freshness {
   request: number;
   sessionID: string;
   startRevision: number;
+}
+
+interface RemoteState {
+  sessionID: string;
+  totals?: Totals;
+  metrics?: CompletedMetrics;
+  hasDescendants: boolean;
+  failed: boolean;
+  contributions?: ReadonlyMap<string, SessionContribution>;
+  incompleteBranches?: ReadonlySet<string>;
 }
 
 interface MessageWithParts {
@@ -397,11 +406,11 @@ async function fetchBranch(
     visited.add(session.id);
     contributions.set(session.id, await fetchContribution(client, session));
     try {
-      const kids = (
+      const children = (
         await client.session.children({ sessionID: session.id }, { throwOnError: true })
       ).data;
-      for (const kid of kids) {
-        if (kid && !visited.has(kid.id)) queue.push(kid);
+      for (const child of children) {
+        if (child && !visited.has(child.id)) queue.push(child);
       }
     } catch {
       incompleteBranches.add(session.id);
@@ -474,15 +483,7 @@ async function fetchFamily(
  * Totals cover the current session plus all of its descendants (subagents).
  */
 export function createUsageModel(api: TuiPluginApi, sessionId: () => string): UsageModel {
-  const [remote, setRemote] = createSignal<{
-    sessionID: string;
-    totals?: Totals;
-    metrics?: CompletedMetrics;
-    hasDescendants: boolean;
-    failed: boolean;
-    contributions?: ReadonlyMap<string, SessionContribution>;
-    incompleteBranches?: ReadonlySet<string>;
-  }>();
+  const [remote, setRemote] = createSignal<RemoteState>();
   const [liveSpeed, setLiveSpeed] = createSignal<LiveSpeedState>();
   const [liveTtft, setLiveTtft] = createSignal<LiveTtftState>();
   let request = 0;
@@ -492,6 +493,10 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   let appliedRevision = 0;
   const contributionRevisions = new Map<string, number>();
   const pendingBranches = new Map<string, Session>();
+  /** Member ids whose last incremental get failed; retried on next invalidation. */
+  const failedMembers = new Set<string>();
+  /** Deleted session ids; a full refresh must never resurrect their totals. */
+  const tombstones = new Set<string>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let ttftTurns = new Set<string>();
   /** Sessions of the last confirmed family walk; membership-filtered events. */
@@ -508,12 +513,37 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   });
   const isFresh = (freshness: Freshness): boolean =>
     freshness.request === request && freshness.sessionID === sessionId();
+  const isCurrent = (
+    previous: RemoteState | undefined,
+    freshness: Freshness,
+  ): previous is RemoteState => !!previous && isFresh(freshness);
   /** True when an incremental touched this contribution after the work started. */
   const hasNewerIncremental = (id: string, freshness: Freshness): boolean =>
     (contributionRevisions.get(id) ?? 0) > freshness.startRevision;
-  const touchContributions = (ids: Iterable<string>): void => {
+  const markRevised = (ids: Iterable<string>): void => {
     const revision = ++appliedRevision;
     for (const id of ids) contributionRevisions.set(id, revision);
+  };
+  /**
+   * The shared merge-and-publish tail: fold contributions, adopt the member
+   * set, and shape the remote snapshot the View reads.
+   */
+  const publishFamily = (
+    sessionID: string,
+    contributions: ReadonlyMap<string, SessionContribution>,
+    incompleteBranches: ReadonlySet<string> | undefined,
+  ): RemoteState => {
+    const aggregate = aggregateContributions(contributions, incompleteBranches);
+    members = aggregate.members;
+    return {
+      sessionID,
+      totals: aggregate.totals,
+      metrics: aggregate.metrics,
+      hasDescendants: aggregate.hasDescendants,
+      contributions,
+      incompleteBranches: aggregate.incompleteBranches,
+      failed: !aggregate.totals,
+    };
   };
 
   const stopTimerIfIdle = () => {
@@ -590,31 +620,37 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
             for (const [id, contribution] of previous.contributions) {
               if (
                 !contributions.has(id) &&
+                !tombstones.has(id) &&
                 belongsToIncompleteBranch(id, family.incompleteBranches, previous.contributions)
               ) {
                 contributions.set(id, contribution);
               }
             }
           }
-          const aggregate = aggregateContributions(contributions, family.incompleteBranches);
-          members = aggregate.members;
-          return {
-            sessionID,
-            totals: aggregate.totals,
-            metrics: aggregate.metrics,
-            hasDescendants: aggregate.hasDescendants,
-            contributions,
-            incompleteBranches: aggregate.incompleteBranches,
-            failed: !aggregate.totals,
-          };
-        });
-        const pending = [...pendingBranches.values()];
-        pendingBranches.clear();
-        for (const session of pending) {
-          if (!isAttachable(session)) {
-            continue;
+          const next = publishFamily(sessionID, contributions, family.incompleteBranches);
+          for (const id of failedMembers) {
+            if (!members.has(id)) failedMembers.delete(id);
           }
-          refreshBranch(session, true);
+          return next;
+        });
+        const deferred = [...pendingBranches.values()];
+        pendingBranches.clear();
+        // Attach parent-first to a fixpoint: out-of-order queued chains resolve
+        // once their parent commits, while true orphans never attach.
+        let progressed = true;
+        while (deferred.length > 0 && progressed) {
+          progressed = false;
+          for (let i = deferred.length - 1; i >= 0; i--) {
+            const session = deferred[i] as Session;
+            if (tombstones.has(session.id) || members.has(session.id)) {
+              deferred.splice(i, 1);
+              continue;
+            }
+            if (!isAttachable(session)) continue;
+            deferred.splice(i, 1);
+            refreshBranch(session, true);
+            progressed = true;
+          }
         }
       })
       .catch(() => {
@@ -636,6 +672,8 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     contributionRevisions.clear();
     appliedRevision = 0;
     pendingBranches.clear();
+    failedMembers.clear();
+    tombstones.clear();
     setRemote(undefined);
     untrack(() => {
       ttftTurns = completedTurns(sessionID);
@@ -649,21 +687,12 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   ) => {
     if (!isFresh(freshness)) return;
     setRemote((previous) => {
-      if (previous?.sessionID !== freshness.sessionID || !previous.contributions) return previous;
+      if (!isCurrent(previous, freshness) || !previous.contributions) return previous;
       const contributions = new Map(previous.contributions);
       for (const [id, contribution] of additions) contributions.set(id, contribution);
-      const aggregate = aggregateContributions(contributions);
-      members = aggregate.members;
-      touchContributions(additions.keys());
-      return {
-        sessionID: freshness.sessionID,
-        totals: aggregate.totals,
-        metrics: aggregate.metrics,
-        hasDescendants: aggregate.hasDescendants,
-        contributions,
-        incompleteBranches: previous.incompleteBranches,
-        failed: !aggregate.totals,
-      };
+      markRevised(additions.keys());
+      for (const id of additions.keys()) failedMembers.delete(id);
+      return publishFamily(freshness.sessionID, contributions, previous.incompleteBranches);
     });
   };
   const refreshMember = (memberID: string) => {
@@ -683,19 +712,11 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
       .catch(() => {
         if (memberRequests.get(memberID) !== memberRequest) return;
         if (!isFresh(freshness)) return;
-        // The last confirmed contribution stays; track the failed member so
-        // the next family invalidation retries it instead of waiting for the
-        // member's own next event.
-        setRemote((previous) => {
-          if (previous?.sessionID !== freshness.sessionID || !previous.contributions) {
-            return previous;
-          }
-          if (previous.incompleteBranches?.has(memberID)) return previous;
-          return {
-            ...previous,
-            incompleteBranches: new Set([...(previous.incompleteBranches ?? []), memberID]),
-          };
-        });
+        // The last confirmed contribution stays; track the failed member on
+        // its own retry list so the next family invalidation retries it. A
+        // recovered member clears its own flag on success, unlike branch
+        // failures which only a branch refetch can resolve.
+        failedMembers.add(memberID);
       });
   };
   const refreshBranch = (session: Session, isNew: boolean) => {
@@ -707,15 +728,14 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
       .then((branch) => {
         setRemote((previous) => {
           if (
-            !isFresh(freshness) ||
+            !isCurrent(previous, freshness) ||
             branchRequests.get(session.id) !== branchRequest ||
-            previous?.sessionID !== freshness.sessionID ||
             !previous.contributions
           ) {
             return previous;
           }
           const contributions = new Map(previous.contributions);
-          const changed = new Set<string>();
+          const changedIds = new Set<string>();
           for (const id of previous.contributions.keys()) {
             if (
               belongsToBranch(id, session.id, previous.contributions) &&
@@ -724,13 +744,13 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
               !hasNewerIncremental(id, freshness)
             ) {
               contributions.delete(id);
-              changed.add(id);
+              changedIds.add(id);
             }
           }
           for (const [id, contribution] of branch.contributions) {
             if (!hasNewerIncremental(id, freshness)) {
               contributions.set(id, contribution);
-              changed.add(id);
+              changedIds.add(id);
             }
           }
           const incompleteBranches = new Set(previous.incompleteBranches);
@@ -740,18 +760,9 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
             }
           }
           for (const id of branch.incompleteBranches) incompleteBranches.add(id);
-          const aggregate = aggregateContributions(contributions, incompleteBranches);
-          members = aggregate.members;
-          touchContributions(changed);
-          return {
-            sessionID: freshness.sessionID,
-            totals: aggregate.totals,
-            metrics: aggregate.metrics,
-            hasDescendants: aggregate.hasDescendants,
-            contributions,
-            incompleteBranches,
-            failed: !aggregate.totals,
-          };
+          markRevised(changedIds);
+          for (const id of changedIds) failedMembers.delete(id);
+          return publishFamily(freshness.sessionID, contributions, incompleteBranches);
         });
       })
       .catch(() => {
@@ -768,14 +779,25 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
           // The next invalidation retries again.
         });
     }
+    for (const memberID of failedMembers) {
+      if (!members.has(memberID)) {
+        failedMembers.delete(memberID);
+        continue;
+      }
+      refreshMember(memberID);
+    }
   };
   const addBranch = (session: Session) => {
-    if (!isAttachable(session)) return;
+    if (members.has(session.id)) return;
+    if (!session.parentID) return;
     if (!remote()?.contributions) {
+      // Initial load: queue every chained session; the replay resolves
+      // out-of-order chains to a fixpoint and drops true orphans.
       members = new Set([...members, session.id]);
       pendingBranches.set(session.id, session);
       return;
     }
+    if (!isAttachable(session)) return;
     refreshBranch(session, true);
   };
   const offSessionCreated = api.event.on("session.created", (event) => {
@@ -797,8 +819,19 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     }
     for (const id of pruned) {
       pendingBranches.delete(id);
+      tombstones.add(id);
+      failedMembers.delete(id);
       if (branchRequests.has(id)) {
         branchRequests.set(id, ++nextAsyncRequest);
+      }
+    }
+    const previous = remote()?.contributions;
+    if (previous) {
+      for (const id of previous.keys()) {
+        if (id === deletedID || belongsToBranch(id, deletedID, previous)) {
+          tombstones.add(id);
+          failedMembers.delete(id);
+        }
       }
     }
     if (tracked) {

@@ -1676,6 +1676,70 @@ test("transient member refresh failure retries on the next invalidation", async 
     });
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "190");
+
+    // The recovered member leaves no retry flag behind: a further
+    // invalidation performs no branch refetch for it.
+    fake.requests.length = 0;
+    fake.emit("session.updated", {
+      sessionID: root,
+      info: fakeSession(root, undefined, rootUsage),
+    });
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "190");
+    assert.ok(
+      fake.requests.every((request) => request !== `children:${child}`),
+      fake.requests.join(", "),
+    );
+  });
+});
+
+test("deleted session is not resurrected by a partial full refresh", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_tombstone_root";
+    const child = "ses_tombstone_child";
+    const grandchild = "ses_tombstone_grandchild";
+    const rootUsage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const childUsage = {
+      tokens: { input: 40, output: 4, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const grandchildUsage = {
+      tokens: { input: 7, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const family = {
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([
+        [root, rootUsage],
+        [child, childUsage],
+        [grandchild, grandchildUsage],
+      ]),
+      children: new Map([[root, [child]], [child, [grandchild]]]),
+    };
+    const fake = createFakeTuiApi(family);
+    const model = createUsageModel(fake.api, () => root);
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "147");
+
+    // The child's subtree becomes unresolvable; known totals are preserved.
+    fake.setStore({ ...family, serverFailures: new Set([child]) });
+    fake.emit("server.connected", {});
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "147");
+
+    // The grandchild is deleted while the branch is still failing: the next
+    // full refresh must drop it instead of re-inserting the stale snapshot.
+    fake.setStore({
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([[root, rootUsage], [child, childUsage]]),
+      children: new Map([[root, [child]], [child, []]]),
+      serverFailures: new Set([child]),
+    });
+    fake.emit("session.deleted", { sessionID: grandchild, info: undefined });
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "140");
   });
 });
 
@@ -1903,6 +1967,55 @@ test("queued startup branch is discarded when deleted before initial load comple
     await nextTask();
 
     assert.equal(rowValue(model.rows(), "Input"), "100");
+  });
+});
+
+test("out-of-order queued chain attaches parent-first after initial load", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_chain_root";
+    const child = "ses_chain_child";
+    const grandchild = "ses_chain_grandchild";
+    const rootUsage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const childUsage = {
+      tokens: { input: 50, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const grandchildUsage = {
+      tokens: { input: 7, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    let release = () => {};
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fake = createFakeTuiApi({
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([
+        [root, rootUsage],
+        [child, childUsage],
+        [grandchild, grandchildUsage],
+      ]),
+      children: new Map<string, readonly string[]>(),
+      serverDelays: new Map([[`children:${root}`, barrier]]),
+    });
+    const model = createUsageModel(fake.api, () => root);
+    await nextTask();
+
+    // Grandchild event arrives before its parent's; the server still lists
+    // nothing under the root.
+    fake.emit("session.created", {
+      sessionID: grandchild,
+      info: fakeSession(grandchild, child, grandchildUsage),
+    });
+    fake.emit("session.created", {
+      sessionID: child,
+      info: fakeSession(child, root, childUsage),
+    });
+    release();
+    await nextTask();
+
+    assert.equal(rowValue(model.rows(), "Input"), "157");
   });
 });
 
