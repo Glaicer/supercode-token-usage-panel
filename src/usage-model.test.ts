@@ -1726,6 +1726,49 @@ test("slow full refresh cannot remove a concurrently created branch", async () =
   });
 });
 
+test("child created during initial family load is applied after the snapshot", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_initial_creation_race_root";
+    const child = "ses_initial_creation_race_child";
+    const rootUsage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const childUsage = {
+      tokens: { input: 50, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    let release = () => {};
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const initial = {
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([[root, rootUsage]]),
+      children: new Map<string, readonly string[]>(),
+      serverDelays: new Map([[`children:${root}`, barrier]]),
+    };
+    const fake = createFakeTuiApi(initial);
+    const model = createUsageModel(fake.api, () => root);
+    await nextTask();
+
+    fake.setStore({
+      ...initial,
+      stateUsage: new Map([[root, rootUsage], [child, childUsage]]),
+      children: new Map([[root, [child]]]),
+      serverDelays: new Map(),
+    });
+    fake.emit("session.created", {
+      sessionID: child,
+      info: fakeSession(child, root, childUsage),
+    });
+    await nextTask();
+    release();
+    await nextTask();
+
+    assert.equal(rowValue(model.rows(), "Input"), "150");
+  });
+});
+
 test("root session switch: family resets, no leakage across roots", async () => {
   await withAsyncRoot(async () => {
     const rootA = "ses_root_a";

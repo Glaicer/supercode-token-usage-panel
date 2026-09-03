@@ -478,6 +478,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   const branchRequests = new Map<string, number>();
   let appliedRevision = 0;
   const contributionRevisions = new Map<string, number>();
+  const pendingBranches = new Map<string, Session>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let ttftTurns = new Set<string>();
   /** Sessions of the last confirmed family walk; membership-filtered events. */
@@ -576,6 +577,9 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
             failed: !aggregate.totals,
           };
         });
+        const pending = [...pendingBranches.values()];
+        pendingBranches.clear();
+        for (const session of pending) refreshBranch(session, true);
       })
       .catch(() => {
         if (current !== request || sessionId() !== sessionID) return;
@@ -595,6 +599,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     branchRequests.clear();
     contributionRevisions.clear();
     appliedRevision = 0;
+    pendingBranches.clear();
     setRemote(undefined);
     untrack(() => {
       ttftTurns = completedTurns(sessionID);
@@ -723,6 +728,11 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   };
   const addBranch = (session: Session) => {
     if (!session.parentID || !members.has(session.parentID) || members.has(session.id)) return;
+    if (!remote()?.contributions) {
+      members = new Set([...members, session.id]);
+      pendingBranches.set(session.id, session);
+      return;
+    }
     refreshBranch(session, true);
   };
   const offSessionCreated = api.event.on("session.created", (event) => {
