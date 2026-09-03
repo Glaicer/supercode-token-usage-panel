@@ -1,19 +1,55 @@
 {
-  "name": "@supercode/tui-token-usage-panel",
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@glaicer/supercode-token-usage-panel",
   "version": "0.1.0",
-  "private": true,
-  "type": "module",
   "description": "OpenCode TUI sidebar section: cumulative token usage and cost of the current session family.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Dmitrii Aronov <aronov.mml@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Glaicer/supercode-token-usage-panel.git"
+  },
+  "homepage": "https://github.com/Glaicer/supercode-token-usage-panel#readme",
+  "bugs": "https://github.com/Glaicer/supercode-token-usage-panel/issues",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tui-plugin",
+    "token-usage",
+    "token-cost",
+    "generation-speed"
+  ],
+  "exports": {
+    "./tui": "./src/usage-panel.tsx"
+  },
+  "files": [
+    "src",
+    "!src/*.test.ts",
+    "!src/fake-tui-api.ts",
+    "!src/test-fixtures.ts",
+    "!src/fixtures/**"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "node --test --conditions browser 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@opencode-ai/plugin": ">=1.18.21",
+    "@opentui/core": ">=0.4.5",
+    "@opentui/solid": ">=0.4.5",
+    "solid-js": "1.9.12"
+  },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.18.21",
     "@opencode-ai/sdk": "1.18.21",
-    "@opentui/solid": "0.4.5",
     "@types/node": "24.13.3",
-    "solid-js": "1.9.12",
     "typescript": "5.8.2"
+  },
+  "engines": {
+    "node": ">=24",
+    "opencode": ">=1.18.21"
   }
 }
