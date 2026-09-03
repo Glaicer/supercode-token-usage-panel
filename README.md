@@ -37,4 +37,6 @@ Manual install also works: add the package to the `plugin` array in `tui.json` (
 ```bash
 npm run typecheck   # tsc --noEmit
 npm test            # node --test, network-free: session history comes from fixtures
+npm run build       # precompile Solid TSX into dist
+npm pack --dry-run  # build and verify the publish artifact
 ```
