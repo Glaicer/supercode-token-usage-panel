@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { createRoot, createSignal } from "solid-js";
+import { createEffect, createMemo, createRoot, createSignal, onCleanup, untrack } from "solid-js";
 import type {
   AssistantMessage,
   Session,
@@ -14,6 +14,7 @@ import {
   USAGE_SECTION_TITLE_WITH_SUBAGENTS,
   createUsageModel,
   formatTokens,
+  type SolidRuntime,
 } from "./usage-model.ts";
 import {
   loadHistoryFixtures,
@@ -23,6 +24,9 @@ import { createFakeTuiApi, type FakeStore } from "./fake-tui-api.ts";
 
 const PAID = "ses_0dc2bb655ffeuhvaKtIFLQKpog";
 const EMPTY = "ses_fd3844d18ffeAB6W4jxWvqUPfx";
+
+// Same-process solid-js copy stands in for the host runtime (see SolidRuntime).
+const solid: SolidRuntime = { createSignal, createMemo, createEffect, onCleanup, untrack };
 
 function withRoot(fn: () => void): void {
   createRoot((dispose) => {
@@ -180,7 +184,7 @@ test("completed generation speed is weighted and excludes TTFT and tool time", a
         ]],
       ]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
 
     // 300 generated tokens / ((4-1-1) + (5-1)) seconds = 50 tps.
@@ -217,7 +221,7 @@ test("live diagnostics tick from Unicode deltas using a snapshotted model calibr
       ]),
     };
     const fake = createFakeTuiApi(initial);
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
 
     fake.emit("message.updated", { sessionID: sid, info: live });
@@ -327,7 +331,7 @@ test("live calibration is weighted per model and excludes tool steps", async (t)
         [live.id, [open]],
       ]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
 
     fake.emit("message.part.delta", {
@@ -354,7 +358,7 @@ test("empty and unavailable states keep their status while showing live TTFT", a
       sessions: new Map([[sid, [live]]]),
       parts: new Map([[live.id, []]]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(model.status(), "empty");
 
@@ -371,7 +375,7 @@ test("empty and unavailable states keep their status while showing live TTFT", a
     const sid = "ses_unavailable_live";
     const live = fakeAssistant("msg_unavailable_live", sid, { time: { created: 39_500 } });
     const fake = createFakeTuiApi({ sessions: new Map(), parts: new Map() });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(model.status(), "unavailable");
 
@@ -408,7 +412,7 @@ test("live speed ignores descendants and resets on session switch and reconnect"
       children: new Map([[rootA, [child]]]),
     });
     const [sessionID, setSessionID] = createSignal(rootA);
-    const model = createUsageModel(fake.api, sessionID);
+    const model = createUsageModel(fake.api, sessionID, solid);
     await nextTask();
 
     fake.emit("message.part.delta", {
@@ -466,7 +470,7 @@ test("live TTFT is shown only for the first assistant step of a turn", async (t)
       parts: new Map([[first.id, []], [second.id, []]]),
       stateUsage: new Map([[sid, usage]]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
 
     fake.emit("message.updated", { sessionID: sid, info: first });
@@ -519,7 +523,7 @@ test("switching into a session mid-turn does not restart live TTFT", async (t) =
       stateUsage: new Map([[rootA, usage], [rootB, usage]]),
     });
     const [sessionID, setSessionID] = createSignal(rootA);
-    const model = createUsageModel(fake.api, sessionID);
+    const model = createUsageModel(fake.api, sessionID, solid);
     await nextTask();
 
     setSessionID(rootB);
@@ -592,7 +596,7 @@ test("completed metrics preserve conservative multi-step timing and skip invalid
         ]],
       ]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
 
     // The 1.5s reasoning-to-text gap stays in the 3s decode denominator.
@@ -618,7 +622,7 @@ test("short streams never show a number and a later visible part starts a new me
       stateUsage: new Map([[sid, usage]]),
     };
     const fake = createFakeTuiApi(initial);
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
 
     fake.emit("message.part.delta", {
@@ -664,7 +668,7 @@ test("a pre-existing TTFT timer cannot publish live speed before its own first s
       parts: new Map([[live.id, [open]]]),
       stateUsage: new Map([[sid, usage]]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
 
     fake.emit("message.updated", { sessionID: sid, info: live });
@@ -708,7 +712,7 @@ test("completed message update refreshes metrics after a step-finish race", asyn
       }]]),
     };
     const fake = createFakeTuiApi(initial);
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Generation speed"), "–");
 
@@ -751,7 +755,7 @@ test("completed descendant message update refreshes family diagnostics", async (
       children: new Map([[root, [child]]]),
     };
     const fake = createFakeTuiApi(initial);
-    const model = createUsageModel(fake.api, () => root);
+    const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Generation speed"), "–");
 
@@ -791,7 +795,7 @@ test("positive speeds that round to zero render as unavailable", async (t) => {
         [live.id, [open]],
       ]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Generation speed"), "–");
 
@@ -827,7 +831,7 @@ test("section title and row labels are pinned", () => {
 test("real paid session: authoritative totals render exactly", async () => {
   await withAsyncRoot(async () => {
     const fake = createFakeTuiApi(fixtureStore(PAID));
-    const model = createUsageModel(fake.api, () => PAID);
+    const model = createUsageModel(fake.api, () => PAID, solid);
 
     await nextTask();
     assert.equal(model.status(), "ready");
@@ -869,7 +873,7 @@ test("real multi-message turn: every assistant message of the turn contributes",
       sessions: new Map([[PAID, turnMessages]]),
       parts,
     });
-    const model = createUsageModel(fake.api, () => PAID);
+    const model = createUsageModel(fake.api, () => PAID, solid);
     assert.equal(model.status(), "ready");
     const expectedInput = [...parts.values()].flat().reduce(
       (sum, p) => (p.type === "step-finish" ? sum + p.tokens.input : sum),
@@ -883,7 +887,7 @@ test("real multi-message turn: every assistant message of the turn contributes",
 test("empty session: no-data state, no fabricated rows", () => {
   withRoot(() => {
     const fake = createFakeTuiApi(fixtureStore(EMPTY));
-    const model = createUsageModel(fake.api, () => EMPTY);
+    const model = createUsageModel(fake.api, () => EMPTY, solid);
     assert.equal(model.status(), "empty");
     assert.deepEqual(model.rows(), []);
   });
@@ -892,7 +896,7 @@ test("empty session: no-data state, no fabricated rows", () => {
 test("initial aggregate failure: unavailable state, never zeros", async () => {
   await withAsyncRoot(async () => {
     const fake = createFakeTuiApi({ sessions: new Map(), parts: new Map() });
-    const model = createUsageModel(fake.api, () => "ses_missing");
+    const model = createUsageModel(fake.api, () => "ses_missing", solid);
 
     assert.equal(model.status(), "loading");
     await nextTask();
@@ -913,7 +917,7 @@ test("initial family failure does not fall back to an incomplete local aggregate
       stateUsage: new Map([[sid, usage]]),
       serverError: true,
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
 
     await nextTask();
     assert.equal(model.status(), "unavailable");
@@ -943,7 +947,7 @@ test("authoritative aggregate is not capped by the TUI message window", () => {
         ],
       ]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
 
     assert.equal(rowValue(model.rows(), "Input"), "1,000");
     assert.equal(rowValue(model.rows(), "Cache read"), "5,000");
@@ -964,7 +968,7 @@ test("usage event refreshes a stale TUI aggregate", async () => {
       serverUsage: new Map([[sid, first]]),
     };
     const fake = createFakeTuiApi(initial);
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "100");
 
@@ -999,7 +1003,7 @@ test("failed refresh preserves the last confirmed aggregate", async () => {
       serverUsage: new Map([[sid, confirmed]]),
     };
     const fake = createFakeTuiApi(initial);
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "150");
 
@@ -1040,7 +1044,7 @@ test("multi-step-finish message: steps sum, the message.tokens snapshot is ignor
       sessions: new Map([[sid, [message]]]),
       parts: new Map([[messageID, steps]]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(model.status(), "ready");
     const rows = model.rows();
@@ -1062,7 +1066,7 @@ test("cache rate: zero denominator renders a dash even when output exists", () =
       sessions: new Map([[sid, [message]]]),
       parts: new Map([[messageID, [part]]]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     assert.equal(model.status(), "ready");
     const rows = model.rows();
     assert.equal(rowValue(rows, "Cache rate"), "–");
@@ -1085,7 +1089,7 @@ test("contributions from different provider/model pairs combine into totals", ()
         ["msg_b", [partB]],
       ]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     assert.equal(model.status(), "ready");
     const rows = model.rows();
     assert.equal(rowValue(rows, "Input"), "150");
@@ -1102,7 +1106,7 @@ test("frozen fixtures: aggregate matches the annotation frozen with them", () =>
   for (const [sid, expected] of Object.entries(fixtures.expected)) {
     withRoot(() => {
       const fake = createFakeTuiApi(fixtureStore(sid));
-      const model = createUsageModel(fake.api, () => sid);
+      const model = createUsageModel(fake.api, () => sid, solid);
       if (expected.denominator === 0) {
         assert.equal(model.status(), "empty");
         return;
@@ -1124,7 +1128,7 @@ test("session switch: previous session's numbers do not leak", () => {
   withRoot(() => {
     const fake = createFakeTuiApi(fixtureStore(PAID, EMPTY));
     const [sessionId, setSessionId] = createSignal(PAID);
-    const model = createUsageModel(fake.api, sessionId);
+    const model = createUsageModel(fake.api, sessionId, solid);
 
     assert.equal(model.status(), "ready");
     assert.equal(rowValue(model.rows(), "Input"), "649,437");
@@ -1181,7 +1185,7 @@ test("subagent children: descendant usage merges into the root totals", async ()
         }],
       ]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(model.status(), "ready");
     const rows = model.rows();
@@ -1231,7 +1235,7 @@ test("nested subagents: grandchildren contribute through recursion", async () =>
         [child, [grandchild]],
       ]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(model.status(), "ready");
     const rows = model.rows();
@@ -1272,7 +1276,7 @@ test("steps: parent and subagent steps sum across the whole family", async () =>
       stateUsage: new Map([[sid, usage], [child, usage], [grandchild, usage]]),
       children: new Map([[sid, [child]], [child, [grandchild]]]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(model.status(), "ready");
     assert.equal(rowValue(model.rows(), "Steps"), "4");
@@ -1295,7 +1299,7 @@ test("opening a descendant resolves the root and includes the whole family", asy
       ]),
       children: new Map([[root, [child, sibling]]]),
     });
-    const model = createUsageModel(fake.api, () => child);
+    const model = createUsageModel(fake.api, () => child, solid);
     await nextTask();
 
     assert.equal(model.status(), "ready");
@@ -1330,7 +1334,7 @@ test("duplicate listing and cycles: each session counts once", async () => {
         [child, [sid]],
       ]),
     });
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(model.status(), "ready");
     const rows = model.rows();
@@ -1357,7 +1361,7 @@ test("live subagent: creation and usage events extend the totals", async () => {
       children: new Map<string, readonly string[]>(),
     };
     const fake = createFakeTuiApi(initial);
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(model.status(), "ready");
     assert.equal(rowValue(model.rows(), "Input"), "100");
@@ -1421,7 +1425,7 @@ test("new branch discovery survives a concurrent member update", async () => {
       stateUsage: new Map([[root, rootUsage]]),
     };
     const fake = createFakeTuiApi(initial);
-    const model = createUsageModel(fake.api, () => root);
+    const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
 
     fake.setStore({
@@ -1473,7 +1477,7 @@ test("failed concurrent member update does not cancel branch contribution", asyn
       stateUsage: new Map([[root, rootUsage]]),
     };
     const fake = createFakeTuiApi(initial);
-    const model = createUsageModel(fake.api, () => root);
+    const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
 
     const childInfo = fakeSession(child, root, childUsage);
@@ -1502,7 +1506,7 @@ test("events outside the current family do not trigger requests", async () => {
       parts: new Map(),
       stateUsage: new Map([[root, usage], [external, usage]]),
     });
-    createUsageModel(fake.api, () => root);
+    createUsageModel(fake.api, () => root, solid);
     await nextTask();
     fake.requests.length = 0;
 
@@ -1543,7 +1547,7 @@ test("deleted child: totals drop back to the root session", async () => {
       children: new Map([[sid, [child]]]),
     };
     const fake = createFakeTuiApi(withChild);
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "140");
     assert.ok(model.includesSubagents());
@@ -1582,7 +1586,7 @@ test("partial family fetch failure keeps totals from resolved sessions", async (
       children: new Map([[sid, [child]]]),
     };
     const fake = createFakeTuiApi(withChild);
-    const model = createUsageModel(fake.api, () => sid);
+    const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "140");
 
@@ -1631,7 +1635,7 @@ test("failed descendant discovery retains known members and retries on invalidat
       children: new Map([[root, [child]], [child, [grandchild]]]),
     };
     const fake = createFakeTuiApi(family);
-    const model = createUsageModel(fake.api, () => root);
+    const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "147");
 
@@ -1678,7 +1682,7 @@ test("transient member refresh failure retries on the next invalidation", async 
       children: new Map([[root, [child]]]),
     };
     const fake = createFakeTuiApi(family);
-    const model = createUsageModel(fake.api, () => root);
+    const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "140");
 
@@ -1743,7 +1747,7 @@ test("deleted session is not resurrected by a partial full refresh", async () =>
       children: new Map([[root, [child]], [child, [grandchild]]]),
     };
     const fake = createFakeTuiApi(family);
-    const model = createUsageModel(fake.api, () => root);
+    const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "147");
 
@@ -1782,7 +1786,7 @@ test("slow full refresh cannot overwrite a newer member contribution", async () 
       children: new Map([[root, [child]]]),
     };
     const fake = createFakeTuiApi(initial);
-    const model = createUsageModel(fake.api, () => root);
+    const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "140");
 
@@ -1831,7 +1835,7 @@ test("slow full refresh cannot remove a concurrently created branch", async () =
       children: new Map<string, readonly string[]>(),
     };
     const fake = createFakeTuiApi(initial);
-    const model = createUsageModel(fake.api, () => root);
+    const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
 
     let release = () => {};
@@ -1885,7 +1889,7 @@ test("child created during initial family load is applied after the snapshot", a
       serverDelays: new Map([[`children:${root}`, barrier]]),
     };
     const fake = createFakeTuiApi(initial);
-    const model = createUsageModel(fake.api, () => root);
+    const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
 
     fake.setStore({
@@ -1930,7 +1934,7 @@ test("queued startup branch uses updates received before initial load completes"
       children: new Map<string, readonly string[]>(),
       serverDelays: new Map([[`children:${root}`, barrier]]),
     });
-    const model = createUsageModel(fake.api, () => root);
+    const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
 
     fake.emit("session.created", {
@@ -1973,7 +1977,7 @@ test("queued startup branch is discarded when deleted before initial load comple
       children: new Map<string, readonly string[]>(),
       serverDelays: new Map([[`children:${root}`, barrier]]),
     });
-    const model = createUsageModel(fake.api, () => root);
+    const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
 
     fake.emit("session.created", {
@@ -2021,7 +2025,7 @@ test("out-of-order queued chain attaches parent-first after initial load", async
       children: new Map<string, readonly string[]>(),
       serverDelays: new Map([[`children:${root}`, barrier]]),
     });
-    const model = createUsageModel(fake.api, () => root);
+    const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
 
     fake.emit("session.created", {
@@ -2064,7 +2068,7 @@ test("root session switch: family resets, no leakage across roots", async () => 
       children: new Map([[rootA, [childA]]]),
     });
     const [sessionId, setSessionId] = createSignal(rootA);
-    const model = createUsageModel(fake.api, sessionId);
+    const model = createUsageModel(fake.api, sessionId, solid);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "140");
     assert.ok(model.includesSubagents());

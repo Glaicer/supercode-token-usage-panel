@@ -5,7 +5,7 @@
  * folds completed steps/speed/TTFT, and estimates the current visible stream from
  * deltas. Exposes only ready-to-render rows plus a state flag.
  */
-import { createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
+import type * as Solid from "solid-js";
 import type { AssistantMessage, Message, Part, Session } from "@opencode-ai/sdk/v2";
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 
@@ -476,14 +476,36 @@ async function fetchFamily(
 }
 
 /**
+ * Reactive primitives owned by the TUI entrypoint.
+ *
+ * The entry (usage-panel.tsx) imports these from "solid-js", where the host
+ * rewrites them to its own runtime. usage-model.ts must not value-import
+ * "solid-js" itself: as an npm-installed file under node_modules, the host's
+ * prescan can miss this sibling, leaving it bound to an isolated solid-js
+ * copy. Signals from two runtimes never notify each other's renderers, which
+ * freezes the panel at its first paint ("No usage yet.").
+ */
+export interface SolidRuntime {
+  createSignal: typeof Solid.createSignal;
+  createMemo: typeof Solid.createMemo;
+  createEffect: typeof Solid.createEffect;
+  onCleanup: typeof Solid.onCleanup;
+  untrack: typeof Solid.untrack;
+}
+
+/**
  * Usage Model over OpenCode's session aggregate. Totals cover the current
  * session plus all of its descendants (subagents); request sequencing keeps
  * slower responses from overwriting newer ones.
  */
-export function createUsageModel(api: TuiPluginApi, sessionId: () => string): UsageModel {
-  const [remote, setRemote] = createSignal<RemoteState>();
-  const [liveSpeed, setLiveSpeed] = createSignal<LiveSpeedState>();
-  const [liveTtft, setLiveTtft] = createSignal<LiveTtftState>();
+export function createUsageModel(
+  api: TuiPluginApi,
+  sessionId: () => string,
+  solid: SolidRuntime,
+): UsageModel {
+  const [remote, setRemote] = solid.createSignal<RemoteState>();
+  const [liveSpeed, setLiveSpeed] = solid.createSignal<LiveSpeedState>();
+  const [liveTtft, setLiveTtft] = solid.createSignal<LiveTtftState>();
   let request = 0;
   let nextAsyncRequest = 0;
   const memberRequests = new Map<string, number>();
@@ -650,7 +672,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
       });
   };
 
-  createEffect(() => {
+  solid.createEffect(() => {
     const sessionID = sessionId();
     clearProvisional();
     members = new Set([sessionID]);
@@ -662,7 +684,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     failedMembers.clear();
     tombstones.clear();
     setRemote(undefined);
-    untrack(() => {
+    solid.untrack(() => {
       ttftTurns = completedTurns(sessionID);
       refresh(sessionID);
     });
@@ -939,7 +961,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   const offSessionIdle = api.event.on("session.idle", (event) => {
     if (event.properties.sessionID === sessionId()) clearProvisional();
   });
-  onCleanup(() => {
+  solid.onCleanup(() => {
     request++;
     clearProvisional();
     offSessionCreated();
@@ -955,7 +977,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     offSessionIdle();
   });
 
-  const snapshot = createMemo<
+  const snapshot = solid.createMemo<
     { status: UsageStatus; rows: readonly UsageRow[]; hasDescendants: boolean }
   >(() => {
     try {

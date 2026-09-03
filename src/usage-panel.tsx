@@ -13,19 +13,28 @@
  * memory, expanded by default and not persisted (spec: Out of Scope).
  */
 /** @jsxImportSource @opentui/solid */
-import { createSignal, For, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, Show, untrack } from "solid-js";
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import {
   USAGE_SECTION_TITLE,
   USAGE_SECTION_TITLE_WITH_SUBAGENTS,
   USAGE_STATUS_TEXT,
   createUsageModel,
+  type SolidRuntime,
 } from "./usage-model.ts";
+
+/**
+ * The host rewrites this file's "solid-js" import to its own runtime. The
+ * model builds all of its signals on these exact primitives (see
+ * SolidRuntime), so the panel stays in the host's reactive graph even when
+ * installed as an npm package under node_modules.
+ */
+const solid: SolidRuntime = { createSignal, createMemo, createEffect, onCleanup, untrack };
 
 function Section(props: { api: TuiPluginApi; session_id: string }) {
   const theme = () => props.api.theme.current;
   const [collapsed, setCollapsed] = createSignal(false);
-  const model = createUsageModel(props.api, () => props.session_id);
+  const model = createUsageModel(props.api, () => props.session_id, solid);
 
   return (
     <box>
