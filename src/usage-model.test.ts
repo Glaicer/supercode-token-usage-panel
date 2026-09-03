@@ -3,6 +3,7 @@ import test from "node:test";
 import { createRoot, createSignal } from "solid-js";
 import type {
   AssistantMessage,
+  Session,
   StepFinishPart,
   TextPart,
   ToolPart,
@@ -124,6 +125,25 @@ function fakeCompletedTool(
     callID: `call_${id}`,
     tool: "test",
     state: { status: "completed", input: {}, output: "", title: "test", metadata: {}, time: { start, end } },
+  };
+}
+
+function fakeSession(
+  id: string,
+  parentID: string | undefined,
+  usage: { tokens: NonNullable<Session["tokens"]>; cost?: number },
+): Session {
+  return {
+    id,
+    slug: id,
+    projectID: "project-test",
+    directory: "/",
+    title: id,
+    version: "0.0.0-test",
+    ...(parentID ? { parentID } : {}),
+    time: { created: 0, updated: 0 },
+    cost: usage.cost ?? 0,
+    tokens: usage.tokens,
   };
 }
 
@@ -756,6 +776,7 @@ test("section title and row labels are pinned", () => {
     "Cache read",
     "Cache write",
     "Cache rate",
+    "Session cost",
     "Generation speed",
     "Time to first token",
   ]);
@@ -768,7 +789,7 @@ test("real paid session: authoritative totals render exactly", () => {
 
     assert.equal(model.status(), "ready");
     const rows = model.rows();
-    assert.equal(rows.length, 8);
+    assert.equal(rows.length, 9);
     assertLabels(rows);
     assert.equal(rowValue(rows, "Input"), "649,437");
     assert.equal(rowValue(rows, "Output"), "52,276");
@@ -1093,6 +1114,16 @@ test("subagent children: descendant usage merges into the root totals", async ()
         ],
       ]),
       children: new Map([[sid, [child]]]),
+      stateUsage: new Map([
+        [sid, {
+          tokens: { input: 100, output: 10, reasoning: 5, cache: { read: 200, write: 0 } },
+          cost: 1.25,
+        }],
+        [child, {
+          tokens: { input: 50, output: 20, reasoning: 0, cache: { read: 0, write: 60 } },
+          cost: 2.5,
+        }],
+      ]),
     });
     const model = createUsageModel(fake.api, () => sid);
     await nextTask();
@@ -1103,6 +1134,7 @@ test("subagent children: descendant usage merges into the root totals", async ()
     assert.equal(rowValue(rows, "Reasoning"), "5");
     assert.equal(rowValue(rows, "Cache read"), "200");
     assert.equal(rowValue(rows, "Cache write"), "60");
+    assert.equal(rowValue(rows, "Session cost"), "$3.75");
     assert.equal(rowValue(rows, "Generation speed"), "19 tps");
     assert.equal(rowValue(rows, "Time to first token"), "0.1s");
     assert.ok(model.includesSubagents(), "indicator must be on when a child exists");
@@ -1149,6 +1181,30 @@ test("nested subagents: grandchildren contribute through recursion", async () =>
     assert.equal(rowValue(rows, "Input"), "137"); // 100 + 30 + 7
     assert.equal(rowValue(rows, "Output"), "18"); // 10 + 5 + 3
     assert.equal(rowValue(rows, "Reasoning"), "2");
+    assert.ok(model.includesSubagents());
+  });
+});
+
+test("opening a descendant resolves the root and includes the whole family", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_ancestor_root";
+    const child = "ses_ancestor_child";
+    const sibling = "ses_ancestor_sibling";
+    const fake = createFakeTuiApi({
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([
+        [root, { tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } } }],
+        [child, { tokens: { input: 40, output: 4, reasoning: 0, cache: { read: 0, write: 0 } } }],
+        [sibling, { tokens: { input: 7, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }],
+      ]),
+      children: new Map([[root, [child, sibling]]]),
+    });
+    const model = createUsageModel(fake.api, () => child);
+    await nextTask();
+
+    assert.equal(model.status(), "ready");
+    assert.equal(rowValue(model.rows(), "Input"), "147");
     assert.ok(model.includesSubagents());
   });
 });
@@ -1223,11 +1279,65 @@ test("live subagent: creation and usage events extend the totals", async () => {
         [child, childUsage],
       ]),
     });
-    fake.emit("session.created", { sessionID: child, info: undefined });
+    fake.requests.length = 0;
+    fake.emit("session.created", {
+      sessionID: child,
+      info: fakeSession(child, sid, childUsage),
+    });
     await nextTask();
     assert.equal(model.status(), "ready");
     assert.equal(rowValue(model.rows(), "Input"), "150");
     assert.ok(model.includesSubagents());
+    assert.ok(fake.requests.every((request) => request.endsWith(child)), fake.requests.join(", "));
+
+    const grownChild = {
+      tokens: { input: 80, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    fake.setStore({
+      ...initial,
+      children: new Map([[sid, [child]]]),
+      stateUsage: new Map([[sid, rootUsage], [child, grownChild]]),
+    });
+    fake.requests.length = 0;
+    fake.emit("message.part.updated", {
+      part: fakeStepFinish("prt_lf_child", "msg_lf_child", child, grownChild.tokens),
+    });
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "180");
+    assert.ok(fake.requests.every((request) => request.endsWith(child)), fake.requests.join(", "));
+  });
+});
+
+test("events outside the current family do not trigger requests", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_membership_root";
+    const external = "ses_membership_external";
+    const usage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const fake = createFakeTuiApi({
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([[root, usage], [external, usage]]),
+    });
+    createUsageModel(fake.api, () => root);
+    await nextTask();
+    fake.requests.length = 0;
+
+    fake.emit("session.created", {
+      sessionID: external,
+      info: fakeSession(external, undefined, usage),
+    });
+    fake.emit("message.part.updated", {
+      part: fakeStepFinish("prt_external", "msg_external", external, usage.tokens),
+    });
+    fake.emit("session.updated", {
+      sessionID: external,
+      info: fakeSession(external, undefined, usage),
+    });
+    await nextTask();
+
+    assert.deepEqual(fake.requests, []);
   });
 });
 
@@ -1270,7 +1380,7 @@ test("deleted child: totals drop back to the root session", async () => {
   });
 });
 
-test("partial family fetch failure: never a partial sum", async () => {
+test("partial family fetch failure keeps totals from resolved sessions", async () => {
   await withAsyncRoot(async () => {
     const sid = "ses_partial_fail";
     const child = "ses_partial_fail_child";
@@ -1294,8 +1404,8 @@ test("partial family fetch failure: never a partial sum", async () => {
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "140");
 
-    // The child's usage grows, but its children lookup now fails: the walk
-    // must reject the whole snapshot instead of showing root + stale child.
+    // The child's usage grows, but its own messages/children lookups now fail.
+    // Its authoritative aggregate was still resolved in the root's child list.
     const grownChild = {
       tokens: { input: 90, output: 9, reasoning: 0, cache: { read: 0, write: 0 } },
     };
@@ -1308,15 +1418,12 @@ test("partial family fetch failure: never a partial sum", async () => {
       children: new Map([[sid, [child]], [child, []]]),
       serverFailures: new Set([child]),
     });
-    fake.emit("message.part.updated", {
-      part: fakeStepFinish("prt_pf", "msg_pf", child, grownChild.tokens),
-    });
+    fake.emit("server.connected", {});
     await nextTask();
 
-    // The whole walk failed, so the last confirmed family totals stand —
-    // not the root-only slice (100) and not root + stale grown child (190).
+    // The resolved root and child aggregates still form a useful family total.
     assert.equal(model.status(), "ready");
-    assert.equal(rowValue(model.rows(), "Input"), "140");
+    assert.equal(rowValue(model.rows(), "Input"), "190");
   });
 });
 

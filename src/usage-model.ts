@@ -29,6 +29,7 @@ export const USAGE_LABELS = [
   "Cache read",
   "Cache write",
   "Cache rate",
+  "Session cost",
   "Generation speed",
   "Time to first token",
 ] as const;
@@ -53,6 +54,7 @@ interface Totals {
   reasoning: number;
   cacheRead: number;
   cacheWrite: number;
+  cost: number;
 }
 
 interface CompletedMetrics {
@@ -96,7 +98,8 @@ function allZero(totals: Totals): boolean {
     totals.output === 0 &&
     totals.reasoning === 0 &&
     totals.cacheRead === 0 &&
-    totals.cacheWrite === 0
+    totals.cacheWrite === 0 &&
+    totals.cost === 0
   );
 }
 
@@ -112,6 +115,7 @@ function totalsFromSession(session: Session | undefined): Totals | undefined {
     reasoning: safe(session.tokens.reasoning),
     cacheRead: safe(session.tokens.cache.read),
     cacheWrite: safe(session.tokens.cache.write),
+    cost: safe(session.cost),
   };
 }
 
@@ -130,6 +134,10 @@ function formatCacheRate(totals: Totals): string {
   return `${((totals.cacheRead / denominator) * 100).toFixed(1)}%`;
 }
 
+function formatCost(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
 /** Label and value formula travel together — no positional pairing. */
 const ROW_BUILDERS: readonly {
   label: (typeof USAGE_LABELS)[number];
@@ -141,6 +149,7 @@ const ROW_BUILDERS: readonly {
   { label: USAGE_LABELS[3], value: (t) => formatTokens(t.cacheRead) },
   { label: USAGE_LABELS[4], value: (t) => formatTokens(t.cacheWrite) },
   { label: USAGE_LABELS[5], value: formatCacheRate },
+  { label: USAGE_LABELS[6], value: (t) => formatCost(t.cost) },
 ];
 
 function positive(value: number): boolean {
@@ -184,11 +193,11 @@ function buildDiagnosticRows(
 ): UsageRow[] {
   return [
     {
-      label: liveSpeed ? "Live speed" : USAGE_LABELS[6],
+      label: liveSpeed ? "Live speed" : USAGE_LABELS[7],
       value: liveSpeed ? formatLiveSpeed(liveSpeed) : formatGenerationSpeed(metrics),
     },
     {
-      label: USAGE_LABELS[7],
+      label: USAGE_LABELS[8],
       value: liveTtft ? formatLiveTtft(liveTtft) : formatTtft(metrics),
     },
   ];
@@ -228,6 +237,7 @@ function addTotals(target: Totals, source: Totals): void {
   target.reasoning += source.reasoning;
   target.cacheRead += source.cacheRead;
   target.cacheWrite += source.cacheWrite;
+  target.cost += source.cost;
 }
 
 interface FamilyResult {
@@ -237,6 +247,12 @@ interface FamilyResult {
   hasDescendants: boolean;
   /** Root plus every discovered descendant — the refresh filter set. */
   members: ReadonlySet<string>;
+  contributions: ReadonlyMap<string, SessionContribution>;
+}
+
+interface SessionContribution {
+  totals?: Totals;
+  metrics: CompletedMetrics;
 }
 
 interface MessageWithParts {
@@ -309,47 +325,93 @@ function addMetrics(target: CompletedMetrics, source: CompletedMetrics): void {
   }
 }
 
+function aggregateContributions(
+  contributions: ReadonlyMap<string, SessionContribution>,
+): FamilyResult {
+  let totals: Totals | undefined;
+  const metrics = emptyMetrics();
+  for (const contribution of contributions.values()) {
+    if (contribution.totals) {
+      if (totals) addTotals(totals, contribution.totals);
+      else totals = { ...contribution.totals };
+    }
+    addMetrics(metrics, contribution.metrics);
+  }
+  const members = new Set(contributions.keys());
+  return {
+    totals,
+    metrics,
+    hasDescendants: members.size > 1,
+    members,
+    contributions,
+  };
+}
+
+async function fetchContribution(
+  client: TuiPluginApi["client"],
+  session: Session,
+): Promise<SessionContribution> {
+  let metrics = emptyMetrics();
+  try {
+    const messages = (
+      await client.session.messages({ sessionID: session.id }, { throwOnError: true })
+    ).data;
+    metrics = completedMetrics(messages);
+  } catch {
+    // Token and cost aggregates remain useful when diagnostic history is unavailable.
+  }
+  return { totals: totalsFromSession(session), metrics };
+}
+
+async function fetchBranch(
+  client: TuiPluginApi["client"],
+  root: Session,
+): Promise<FamilyResult> {
+  const contributions = new Map<string, SessionContribution>();
+  const queue = [root];
+  const visited = new Set<string>();
+  while (queue.length > 0) {
+    const session = queue.shift() as Session;
+    if (visited.has(session.id)) continue;
+    visited.add(session.id);
+    contributions.set(session.id, await fetchContribution(client, session));
+    try {
+      const kids = (
+        await client.session.children({ sessionID: session.id }, { throwOnError: true })
+      ).data;
+      for (const kid of kids) {
+        if (kid && !visited.has(kid.id)) queue.push(kid);
+      }
+    } catch {
+      // Retry this unresolved branch on the next family invalidation.
+    }
+  }
+  return aggregateContributions(contributions);
+}
+
 /**
  * Fetches the root session, then walks its descendants breadth-first via
  * `session.children`. The visited set guards against duplicate listing (a
  * session reported as a child twice, or a cycle) so no usage is double-counted.
- * Any failed fetch fails the whole walk — a partial sum would understate.
+ * A failed descendant lookup prunes only that unresolved branch; aggregates
+ * already returned by a parent remain authoritative and still contribute.
  */
 async function fetchFamily(
   client: TuiPluginApi["client"],
-  rootID: string,
+  sessionID: string,
 ): Promise<FamilyResult> {
-  const root = (await client.session.get({ sessionID: rootID }, { throwOnError: true })).data;
-  const rootTotals = totalsFromSession(root);
-  if (!rootTotals) {
-    return { metrics: emptyMetrics(), hasDescendants: false, members: new Set([rootID]) };
+  let root = (await client.session.get({ sessionID }, { throwOnError: true })).data;
+  if (!root) throw new Error("session unavailable");
+  const ancestors = new Set([root.id]);
+  while (root.parentID && !ancestors.has(root.parentID)) {
+    ancestors.add(root.parentID);
+    const parent = (
+      await client.session.get({ sessionID: root.parentID }, { throwOnError: true })
+    ).data;
+    if (!parent) throw new Error("parent session unavailable");
+    root = parent;
   }
-  const totals = { ...rootTotals };
-  const rootMessages = (
-    await client.session.messages({ sessionID: rootID }, { throwOnError: true })
-  ).data;
-  const metrics = completedMetrics(rootMessages);
-  let hasDescendants = false;
-
-  const queue = [rootID];
-  const visited = new Set<string>([rootID]);
-  while (queue.length > 0) {
-    const parent = queue.shift() as string;
-    const kids = (await client.session.children({ sessionID: parent }, { throwOnError: true })).data;
-    for (const kid of kids) {
-      if (visited.has(kid.id)) continue;
-      visited.add(kid.id);
-      hasDescendants = true;
-      const kidTotals = totalsFromSession(kid);
-      if (kidTotals) addTotals(totals, kidTotals);
-      const kidMessages = (
-        await client.session.messages({ sessionID: kid.id }, { throwOnError: true })
-      ).data;
-      addMetrics(metrics, completedMetrics(kidMessages));
-      queue.push(kid.id);
-    }
-  }
-  return { totals, metrics, hasDescendants, members: visited };
+  return fetchBranch(client, root);
 }
 
 /**
@@ -365,10 +427,13 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     metrics?: CompletedMetrics;
     hasDescendants: boolean;
     failed: boolean;
+    contributions?: ReadonlyMap<string, SessionContribution>;
   }>();
   const [liveSpeed, setLiveSpeed] = createSignal<LiveSpeedState>();
   const [liveTtft, setLiveTtft] = createSignal<LiveTtftState>();
   let request = 0;
+  let nextMemberRequest = 0;
+  const memberRequests = new Map<string, number>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let ttftTurns = new Set<string>();
   /** Sessions of the last confirmed family walk; membership-filtered events. */
@@ -428,10 +493,10 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   const refresh = (sessionID: string) => {
     const current = ++request;
     void fetchFamily(api.client, sessionID)
-      .then(({ totals, metrics, hasDescendants, members: family }) => {
+      .then(({ totals, metrics, hasDescendants, members: family, contributions }) => {
         if (current !== request || sessionId() !== sessionID) return;
         members = family;
-        setRemote({ sessionID, totals, metrics, hasDescendants, failed: !totals });
+        setRemote({ sessionID, totals, metrics, hasDescendants, contributions, failed: !totals });
       })
       .catch(() => {
         if (current !== request || sessionId() !== sessionID) return;
@@ -447,6 +512,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     const sessionID = sessionId();
     clearProvisional();
     members = new Set([sessionID]);
+    memberRequests.clear();
     setRemote(undefined);
     untrack(() => {
       ttftTurns = completedTurns(sessionID);
@@ -454,18 +520,73 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     });
   });
 
-  const refreshCurrent = (sessionID: string) => {
-    if (sessionID === sessionId() || members.has(sessionID)) refresh(sessionId());
+  const mergeContributions = (
+    additions: ReadonlyMap<string, SessionContribution>,
+    expectedRequest: number,
+    selectedSessionID: string,
+  ) => {
+    if (request !== expectedRequest || sessionId() !== selectedSessionID) return;
+    setRemote((previous) => {
+      if (previous?.sessionID !== selectedSessionID || !previous.contributions) return previous;
+      const contributions = new Map(previous.contributions);
+      for (const [id, contribution] of additions) contributions.set(id, contribution);
+      const aggregate = aggregateContributions(contributions);
+      members = aggregate.members;
+      return {
+        sessionID: selectedSessionID,
+        totals: aggregate.totals,
+        metrics: aggregate.metrics,
+        hasDescendants: aggregate.hasDescendants,
+        contributions,
+        failed: !aggregate.totals,
+      };
+    });
   };
-  /** A new session anywhere might be a descendant — membership is unconfirmed until the walk. */
-  const offSessionCreated = api.event.on("session.created", () => {
-    refreshCurrent(sessionId());
+  const refreshMember = (memberID: string) => {
+    if (!members.has(memberID)) return;
+    const expectedRequest = request;
+    const selectedSessionID = sessionId();
+    const memberRequest = ++nextMemberRequest;
+    memberRequests.set(memberID, memberRequest);
+    void api.client.session.get({ sessionID: memberID }, { throwOnError: true })
+      .then(({ data }) => {
+        if (!data) throw new Error("session unavailable");
+        return fetchContribution(api.client, data);
+      })
+      .then((contribution) => {
+        if (memberRequests.get(memberID) !== memberRequest) return;
+        mergeContributions(new Map([[memberID, contribution]]), expectedRequest, selectedSessionID);
+      })
+      .catch(() => {
+        // Preserve the last confirmed contribution and retry on the next event.
+      });
+  };
+  const addBranch = (session: Session) => {
+    if (!session.parentID || !members.has(session.parentID) || members.has(session.id)) return;
+    members = new Set([...members, session.id]);
+    const expectedRequest = request;
+    const selectedSessionID = sessionId();
+    const memberRequest = ++nextMemberRequest;
+    memberRequests.set(session.id, memberRequest);
+    void fetchBranch(api.client, session)
+      .then((branch) => {
+        if (memberRequests.get(session.id) !== memberRequest) return;
+        mergeContributions(branch.contributions, expectedRequest, selectedSessionID);
+      })
+      .catch(() => {
+        members = new Set([...members].filter((id) => id !== session.id));
+      });
+  };
+  const offSessionCreated = api.event.on("session.created", (event) => {
+    addBranch(event.properties.info);
   });
   const offSessionDeleted = api.event.on("session.deleted", (event) => {
     if (event.properties.sessionID === sessionId() || members.has(event.properties.sessionID)) {
       clearProvisional();
     }
-    refreshCurrent(event.properties.sessionID);
+    if (event.properties.sessionID === sessionId() || members.has(event.properties.sessionID)) {
+      refresh(sessionId());
+    }
   });
   const offPartUpdated = api.event.on("message.part.updated", (event) => {
     const part = event.properties.part;
@@ -490,19 +611,20 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
           .find((candidate) => candidate.id === event.properties.part.messageID);
         if (message?.role === "assistant") ttftTurns.add(message.parentID);
       }
-      refreshCurrent(event.properties.part.sessionID);
+      refreshMember(event.properties.part.sessionID);
     }
   });
   const offPartRemoved = api.event.on("message.part.removed", (event) => {
     if (event.properties.sessionID === sessionId()) clearProvisional();
-    refreshCurrent(event.properties.sessionID);
+    refreshMember(event.properties.sessionID);
   });
   const offMessageRemoved = api.event.on("message.removed", (event) => {
     if (event.properties.sessionID === sessionId()) clearProvisional();
-    refreshCurrent(event.properties.sessionID);
+    refreshMember(event.properties.sessionID);
   });
   const offSessionUpdated = api.event.on("session.updated", (event) => {
-    refreshCurrent(event.properties.info.id);
+    if (members.has(event.properties.info.id)) refreshMember(event.properties.info.id);
+    else addBranch(event.properties.info);
   });
   const offMessageUpdated = api.event.on("message.updated", (event) => {
     const message = event.properties.info;
@@ -510,7 +632,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     if (message.time.completed !== undefined) {
       ttftTurns.add(message.parentID);
       if (liveTtft()?.messageID === message.id) clearLiveTtft();
-      refreshCurrent(event.properties.sessionID);
+      refreshMember(event.properties.sessionID);
       return;
     }
     if (ttftTurns.has(message.parentID)) return;

@@ -26,6 +26,7 @@ export interface FakeStore {
 
 export interface FakeUsage {
   tokens: NonNullable<Session["tokens"]>;
+  cost?: number;
 }
 
 function fail(what: string): never {
@@ -81,7 +82,7 @@ function makeSession(
     version: "0.0.0-test",
     ...(parentID ? { parentID } : {}),
     time: { created: 0, updated: 0 },
-    cost: 0,
+    cost: usage.cost ?? 0,
     tokens: structuredClone(usage.tokens),
   };
 }
@@ -193,11 +194,14 @@ export interface FakeTuiApi {
   emit(type: string, properties: unknown): void
   /** Toasts recorded here instead of going to a UI. */
   readonly toasts: { variant: string; title?: string; message: string }[]
+  /** Client requests, exposed so tests can pin incremental refresh boundaries. */
+  readonly requests: string[]
 }
 
 export function createFakeTuiApi(initial: FakeStore): FakeTuiApi {
   const [store, setStore] = createSignal<FakeStore>(initial)
   const toasts: { variant: string; title?: string; message: string }[] = []
+  const requests: string[] = []
   const listeners = new Map<string, Set<(event: never) => void>>()
 
   const api: TuiPluginApi = {
@@ -284,6 +288,7 @@ export function createFakeTuiApi(initial: FakeStore): FakeTuiApi {
     client: {
       session: {
         get: async ({ sessionID }: { sessionID: string }) => {
+          requests.push(`get:${sessionID}`);
           if (store().serverError || store().serverFailures?.has(sessionID)) {
             throw new Error("fake-tui-api: session.get failed");
           }
@@ -297,6 +302,7 @@ export function createFakeTuiApi(initial: FakeStore): FakeTuiApi {
           };
         },
         children: async ({ sessionID }: { sessionID: string }) => {
+          requests.push(`children:${sessionID}`);
           if (store().serverError || store().serverFailures?.has(sessionID)) {
             throw new Error("fake-tui-api: session.children failed");
           }
@@ -308,6 +314,7 @@ export function createFakeTuiApi(initial: FakeStore): FakeTuiApi {
           };
         },
         messages: async ({ sessionID }: { sessionID: string }) => {
+          requests.push(`messages:${sessionID}`);
           if (store().serverError || store().serverFailures?.has(sessionID)) {
             throw new Error("fake-tui-api: session.messages failed");
           }
@@ -341,5 +348,6 @@ export function createFakeTuiApi(initial: FakeStore): FakeTuiApi {
       for (const handler of listeners.get(type) ?? []) handler({ type, properties } as never)
     },
     toasts,
+    requests,
   }
 }

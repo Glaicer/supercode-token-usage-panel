@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "OpenCode TUI sidebar section: cumulative Token Usage (input, output, reasoning, cache read/write, cache rate) of the current session.",
+  "description": "OpenCode TUI sidebar section: cumulative token usage and cost of the current session family.",
   "scripts": {
     "test": "node --test --conditions browser 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
