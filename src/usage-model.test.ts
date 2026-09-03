@@ -724,6 +724,46 @@ test("completed message update refreshes metrics after a step-finish race", asyn
   });
 });
 
+test("completed descendant message update refreshes family diagnostics", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_descendant_completion_root";
+    const child = "ses_descendant_completion_child";
+    const live = fakeAssistant("msg_descendant_completion", child, {
+      time: { created: 1_000 },
+    });
+    const finish = fakeStepFinish("prt_descendant_completion_finish", live.id, child, {
+      input: 0,
+      output: 100,
+      reasoning: 0,
+      cache: { read: 0, write: 0 },
+    });
+    const parts = new Map([[live.id, [
+      fakeText("prt_descendant_completion_text", live.id, child, "done", 2_000, 3_000),
+      finish,
+    ]]]);
+    const usage = {
+      tokens: { input: 10, output: 100, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const initial = {
+      sessions: new Map([[child, [live]]]),
+      parts,
+      stateUsage: new Map([[root, usage], [child, usage]]),
+      children: new Map([[root, [child]]]),
+    };
+    const fake = createFakeTuiApi(initial);
+    const model = createUsageModel(fake.api, () => root);
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Generation speed"), "–");
+
+    const completed = { ...live, time: { created: 1_000, completed: 3_000 } };
+    fake.setStore({ ...initial, sessions: new Map([[child, [completed]]]) });
+    fake.emit("message.updated", { sessionID: child, info: completed });
+    await nextTask();
+
+    assert.equal(rowValue(model.rows(), "Generation speed"), "100 tps");
+  });
+});
+
 test("positive speeds that round to zero render as unavailable", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 90_000 });
   await withAsyncRoot(async () => {
@@ -854,6 +894,26 @@ test("initial aggregate failure: unavailable state, never zeros", async () => {
     const model = createUsageModel(fake.api, () => "ses_missing");
 
     assert.equal(model.status(), "loading");
+    await nextTask();
+    assert.equal(model.status(), "unavailable");
+    assert.deepEqual(model.rows(), []);
+  });
+});
+
+test("initial family failure does not fall back to an incomplete local aggregate", async () => {
+  await withAsyncRoot(async () => {
+    const sid = "ses_local_only";
+    const usage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const fake = createFakeTuiApi({
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([[sid, usage]]),
+      serverError: true,
+    });
+    const model = createUsageModel(fake.api, () => sid);
+
     await nextTask();
     assert.equal(model.status(), "unavailable");
     assert.deepEqual(model.rows(), []);
@@ -1340,12 +1400,27 @@ test("new branch discovery survives a concurrent member update", async () => {
       ]),
       children: new Map([[root, [child]], [child, [grandchild]]]),
     });
-    const childInfo = fakeSession(child, root, childUsage);
-    fake.emit("session.created", { sessionID: child, info: childInfo });
-    fake.emit("session.updated", { sessionID: child, info: childInfo });
+    const grownChildUsage = {
+      tokens: { input: 80, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    fake.setStore({
+      ...initial,
+      stateUsage: new Map([
+        [root, rootUsage],
+        [child, grownChildUsage],
+        [grandchild, grandchildUsage],
+      ]),
+      children: new Map([[root, [child]], [child, [grandchild]]]),
+    });
+    const createdInfo = fakeSession(child, root, childUsage);
+    fake.emit("session.created", { sessionID: child, info: createdInfo });
+    fake.emit("session.updated", {
+      sessionID: child,
+      info: fakeSession(child, root, grownChildUsage),
+    });
     await nextTask();
 
-    assert.equal(rowValue(model.rows(), "Input"), "147");
+    assert.equal(rowValue(model.rows(), "Input"), "187");
   });
 });
 
@@ -1502,16 +1577,13 @@ test("failed descendant discovery retains known members and retries on invalidat
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "147");
 
-    const grownGrandchild = {
-      tokens: { input: 17, output: 2, reasoning: 0, cache: { read: 0, write: 0 } },
-    };
     fake.setStore({
       ...family,
       stateUsage: new Map([
         [root, rootUsage],
         [child, childUsage],
-        [grandchild, grownGrandchild],
       ]),
+      children: new Map([[root, [child]], [child, []]]),
     });
     fake.emit("session.updated", {
       sessionID: root,
@@ -1519,7 +1591,7 @@ test("failed descendant discovery retains known members and retries on invalidat
     });
     await nextTask();
 
-    assert.equal(rowValue(model.rows(), "Input"), "157");
+    assert.equal(rowValue(model.rows(), "Input"), "140");
   });
 });
 

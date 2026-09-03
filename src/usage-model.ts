@@ -414,6 +414,21 @@ function belongsToIncompleteBranch(
   return false;
 }
 
+function belongsToBranch(
+  sessionID: string,
+  rootID: string,
+  contributions: ReadonlyMap<string, SessionContribution>,
+): boolean {
+  const visited = new Set<string>();
+  let current: string | undefined = sessionID;
+  while (current && !visited.has(current)) {
+    if (current === rootID) return true;
+    visited.add(current);
+    current = contributions.get(current)?.parentID;
+  }
+  return false;
+}
+
 /**
  * Fetches the root session, then walks its descendants breadth-first via
  * `session.children`. The visited set guards against duplicate listing (a
@@ -622,16 +637,52 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     const selectedSessionID = sessionId();
     const branchRequest = ++nextMemberRequest;
     branchRequests.set(session.id, branchRequest);
+    const memberVersions = new Map(memberRequests);
     void fetchBranch(api.client, session)
       .then((branch) => {
-        if (branchRequests.get(session.id) !== branchRequest) return;
-        mergeContributions(branch.contributions, expectedRequest, selectedSessionID);
         setRemote((previous) => {
-          if (previous?.sessionID !== selectedSessionID) return previous;
+          if (
+            request !== expectedRequest ||
+            sessionId() !== selectedSessionID ||
+            branchRequests.get(session.id) !== branchRequest ||
+            previous?.sessionID !== selectedSessionID ||
+            !previous.contributions
+          ) {
+            return previous;
+          }
+          const contributions = new Map(previous.contributions);
+          for (const id of previous.contributions.keys()) {
+            if (
+              belongsToBranch(id, session.id, previous.contributions) &&
+              !branch.contributions.has(id) &&
+              !belongsToIncompleteBranch(id, branch.incompleteBranches, previous.contributions)
+            ) {
+              contributions.delete(id);
+            }
+          }
+          for (const [id, contribution] of branch.contributions) {
+            if (memberRequests.get(id) === memberVersions.get(id)) {
+              contributions.set(id, contribution);
+            }
+          }
           const incompleteBranches = new Set(previous.incompleteBranches);
-          incompleteBranches.delete(session.id);
+          for (const id of incompleteBranches) {
+            if (belongsToBranch(id, session.id, previous.contributions)) {
+              incompleteBranches.delete(id);
+            }
+          }
           for (const id of branch.incompleteBranches) incompleteBranches.add(id);
-          return { ...previous, incompleteBranches };
+          const aggregate = aggregateContributions(contributions, incompleteBranches);
+          members = aggregate.members;
+          return {
+            sessionID: selectedSessionID,
+            totals: aggregate.totals,
+            metrics: aggregate.metrics,
+            hasDescendants: aggregate.hasDescendants,
+            contributions,
+            incompleteBranches,
+            failed: !aggregate.totals,
+          };
         });
       })
       .catch(() => {
@@ -709,7 +760,14 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   });
   const offMessageUpdated = api.event.on("message.updated", (event) => {
     const message = event.properties.info;
-    if (event.properties.sessionID !== sessionId() || message.role !== "assistant") return;
+    if (!members.has(event.properties.sessionID) || message.role !== "assistant") return;
+    if (event.properties.sessionID !== sessionId()) {
+      if (message.time.completed !== undefined) {
+        refreshMember(event.properties.sessionID);
+        retryIncompleteBranches();
+      }
+      return;
+    }
     if (message.time.completed !== undefined) {
       ttftTurns.add(message.parentID);
       if (liveTtft()?.messageID === message.id) clearLiveTtft();
@@ -796,6 +854,12 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     try {
       const sessionID = sessionId();
       const loaded = remote();
+      if (loaded?.sessionID === sessionID && loaded.failed && !loaded.totals) {
+        const speed = liveSpeed();
+        const ttft = liveTtft();
+        const diagnostics = speed || ttft ? buildDiagnosticRows(undefined, speed, ttft) : [];
+        return { status: "unavailable", rows: diagnostics, hasDescendants: false };
+      }
       const totals =
         loaded?.sessionID === sessionID && loaded.totals
           ? loaded.totals
