@@ -534,11 +534,19 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
 
   const refresh = (sessionID: string) => {
     const current = ++request;
+    const memberVersions = new Map(memberRequests);
     void fetchFamily(api.client, sessionID)
       .then((family) => {
         if (current !== request || sessionId() !== sessionID) return;
         setRemote((previous) => {
           const contributions = new Map(family.contributions);
+          if (previous?.sessionID === sessionID && previous.contributions) {
+            for (const [id, contribution] of previous.contributions) {
+              if (memberRequests.get(id) !== memberVersions.get(id)) {
+                contributions.set(id, contribution);
+              }
+            }
+          }
           if (
             family.incompleteBranches.size > 0 &&
             previous?.sessionID === sessionID &&

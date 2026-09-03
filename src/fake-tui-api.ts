@@ -21,6 +21,8 @@ export interface FakeStore {
   children?: Map<string, readonly string[]>;
   /** Sessions that fail session.get / session.children (per-request blackholes). */
   serverFailures?: ReadonlySet<string>;
+  /** Request-specific barriers used to exercise async ordering in tests. */
+  serverDelays?: ReadonlyMap<string, Promise<void>>;
   serverError?: boolean;
 }
 
@@ -289,40 +291,46 @@ export function createFakeTuiApi(initial: FakeStore): FakeTuiApi {
       session: {
         get: async ({ sessionID }: { sessionID: string }) => {
           requests.push(`get:${sessionID}`);
-          if (store().serverError || store().serverFailures?.has(sessionID)) {
+          const snapshot = store();
+          await snapshot.serverDelays?.get(`get:${sessionID}`);
+          if (snapshot.serverError || snapshot.serverFailures?.has(sessionID)) {
             throw new Error("fake-tui-api: session.get failed");
           }
           return {
             data: makeSession(
-              store(),
+              snapshot,
               sessionID,
               "server",
-              findParentID(store().children, sessionID),
+              findParentID(snapshot.children, sessionID),
             ),
           };
         },
         children: async ({ sessionID }: { sessionID: string }) => {
           requests.push(`children:${sessionID}`);
-          if (store().serverError || store().serverFailures?.has(sessionID)) {
+          const snapshot = store();
+          await snapshot.serverDelays?.get(`children:${sessionID}`);
+          if (snapshot.serverError || snapshot.serverFailures?.has(sessionID)) {
             throw new Error("fake-tui-api: session.children failed");
           }
-          const kids = store().children?.get(sessionID) ?? [];
+          const kids = snapshot.children?.get(sessionID) ?? [];
           return {
             data: kids.map((kid) =>
-              makeSession(store(), kid, "server", findParentID(store().children, kid)),
+              makeSession(snapshot, kid, "server", findParentID(snapshot.children, kid)),
             ),
           };
         },
         messages: async ({ sessionID }: { sessionID: string }) => {
           requests.push(`messages:${sessionID}`);
-          if (store().serverError || store().serverFailures?.has(sessionID)) {
+          const snapshot = store();
+          await snapshot.serverDelays?.get(`messages:${sessionID}`);
+          if (snapshot.serverError || snapshot.serverFailures?.has(sessionID)) {
             throw new Error("fake-tui-api: session.messages failed");
           }
-          const messages = store().sessions.get(sessionID) ?? [];
+          const messages = snapshot.sessions.get(sessionID) ?? [];
           return {
             data: messages.map((info) => ({
               info,
-              parts: [...(store().parts.get(info.id) ?? [])],
+              parts: [...(snapshot.parts.get(info.id) ?? [])],
             })),
           };
         },

@@ -1595,6 +1595,55 @@ test("failed descendant discovery retains known members and retries on invalidat
   });
 });
 
+test("slow full refresh cannot overwrite a newer member contribution", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_full_race_root";
+    const child = "ses_full_race_child";
+    const rootUsage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const childUsage = {
+      tokens: { input: 40, output: 4, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const initial = {
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([[root, rootUsage], [child, childUsage]]),
+      children: new Map([[root, [child]]]),
+    };
+    const fake = createFakeTuiApi(initial);
+    const model = createUsageModel(fake.api, () => root);
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "140");
+
+    let release = () => {};
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fake.setStore({
+      ...initial,
+      serverDelays: new Map([[`children:${root}`, barrier]]),
+    });
+    fake.emit("server.connected", {});
+    await nextTask();
+
+    const grownChild = {
+      tokens: { input: 80, output: 8, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    fake.setStore({ ...initial, stateUsage: new Map([[root, rootUsage], [child, grownChild]]) });
+    fake.emit("session.updated", {
+      sessionID: child,
+      info: fakeSession(child, root, grownChild),
+    });
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "180");
+
+    release();
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "180");
+  });
+});
+
 test("root session switch: family resets, no leakage across roots", async () => {
   await withAsyncRoot(async () => {
     const rootA = "ses_root_a";
