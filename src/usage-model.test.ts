@@ -21,9 +21,8 @@ import {
 } from "./test-fixtures.ts";
 import { createFakeTuiApi, type FakeStore } from "./fake-tui-api.ts";
 
-// Real local-history sessions frozen in src/fixtures/history.json.
-const PAID = "ses_0dc2bb655ffeuhvaKtIFLQKpog"; // glm-5.2, cache-heavy
-const EMPTY = "ses_fd3844d18ffeAB6W4jxWvqUPfx"; // user messages only
+const PAID = "ses_0dc2bb655ffeuhvaKtIFLQKpog";
+const EMPTY = "ses_fd3844d18ffeAB6W4jxWvqUPfx";
 
 function withRoot(fn: () => void): void {
   createRoot((dispose) => {
@@ -848,9 +847,6 @@ test("real paid session: authoritative totals render exactly", async () => {
 
 test("real multi-message turn: every assistant message of the turn contributes", () => {
   withRoot(() => {
-    // The paid fixture contains turns that produced several assistant
-    // messages under one user parent; fold a store holding ONLY that turn and
-    // check the totals equal exactly that turn's sum.
     const fixture = loadHistoryFixtures().sessions.get(PAID) as SessionFixture;
     const byParent = new Map<string, AssistantMessage[]>();
     for (const message of fixture.messages) {
@@ -875,7 +871,6 @@ test("real multi-message turn: every assistant message of the turn contributes",
     });
     const model = createUsageModel(fake.api, () => PAID);
     assert.equal(model.status(), "ready");
-    // Oracle folded from the PARTS, not from message-level token snapshots.
     const expectedInput = [...parts.values()].flat().reduce(
       (sum, p) => (p.type === "step-finish" ? sum + p.tokens.input : sum),
       0,
@@ -1021,11 +1016,6 @@ test("failed refresh preserves the last confirmed aggregate", async () => {
 
 test("multi-step-finish message: steps sum, the message.tokens snapshot is ignored", async () => {
   await withAsyncRoot(async () => {
-    // Two REAL step-finish payloads from two different real messages, placed
-    // under one message id: the persisted runtime prunes intermediate
-    // step-finishes, so history cannot provide this shape frozen — but the
-    // API contract allows it, and folding over parts (not over the
-    // message-level snapshot) is exactly what ticket 01 demands.
     const fixture = loadHistoryFixtures().sessions.get(PAID) as SessionFixture;
     const realParts: StepFinishPart[] = [];
     for (const parts of fixture.parts.values()) {
@@ -1040,8 +1030,6 @@ test("multi-step-finish message: steps sum, the message.tokens snapshot is ignor
     const sid = "ses_synthetic_multi";
     const messageID = "msg_multi";
     const message = fakeAssistant(messageID, sid, {
-      // Snapshot lie: message-level field carries only the LAST step, which
-      // the fold must ignore in favour of summing the parts.
       tokens: structuredClone(last.tokens),
     });
     const steps = [first, last].map((part, i) =>
@@ -1058,7 +1046,6 @@ test("multi-step-finish message: steps sum, the message.tokens snapshot is ignor
     const rows = model.rows();
     assert.equal(rowValue(rows, "Input"), formatTokens(first.tokens.input + last.tokens.input));
     assert.notEqual(rowValue(rows, "Input"), last.tokens.input.toLocaleString("en-US"));
-    // Two step-finish parts under one message count as two steps.
     assert.equal(rowValue(rows, "Steps"), "2");
   });
 });
@@ -1248,8 +1235,8 @@ test("nested subagents: grandchildren contribute through recursion", async () =>
     await nextTask();
     assert.equal(model.status(), "ready");
     const rows = model.rows();
-    assert.equal(rowValue(rows, "Input"), "137"); // 100 + 30 + 7
-    assert.equal(rowValue(rows, "Output"), "18"); // 10 + 5 + 3
+    assert.equal(rowValue(rows, "Input"), "137");
+    assert.equal(rowValue(rows, "Output"), "18");
     assert.equal(rowValue(rows, "Reasoning"), "2");
     assert.ok(model.includesSubagents());
   });
@@ -1288,7 +1275,6 @@ test("steps: parent and subagent steps sum across the whole family", async () =>
     const model = createUsageModel(fake.api, () => sid);
     await nextTask();
     assert.equal(model.status(), "ready");
-    // 1 (root) + 2 (child, two step-finishes in one message) + 1 (grandchild).
     assert.equal(rowValue(model.rows(), "Steps"), "4");
     assert.ok(model.includesSubagents());
   });
@@ -1340,8 +1326,6 @@ test("duplicate listing and cycles: each session counts once", async () => {
         ],
       ]),
       children: new Map([
-        // child listed twice by the root, and the child "reports" the root
-        // back — the walk must neither double-count nor loop forever.
         [sid, [child, child]],
         [child, [sid]],
       ]),
@@ -1350,7 +1334,7 @@ test("duplicate listing and cycles: each session counts once", async () => {
     await nextTask();
     assert.equal(model.status(), "ready");
     const rows = model.rows();
-    assert.equal(rowValue(rows, "Input"), "140"); // 100 + 40, counted once
+    assert.equal(rowValue(rows, "Input"), "140");
     assert.equal(rowValue(rows, "Output"), "14");
     assert.ok(model.includesSubagents());
   });
@@ -1602,8 +1586,6 @@ test("partial family fetch failure keeps totals from resolved sessions", async (
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "140");
 
-    // The child's usage grows, but its own messages/children lookups now fail.
-    // Its authoritative aggregate was still resolved in the root's child list.
     const grownChild = {
       tokens: { input: 90, output: 9, reasoning: 0, cache: { read: 0, write: 0 } },
     };
@@ -1619,7 +1601,6 @@ test("partial family fetch failure keeps totals from resolved sessions", async (
     fake.emit("server.connected", {});
     await nextTask();
 
-    // The resolved root and child aggregates still form a useful family total.
     assert.equal(model.status(), "ready");
     assert.equal(rowValue(model.rows(), "Input"), "190");
   });
@@ -1701,7 +1682,6 @@ test("transient member refresh failure retries on the next invalidation", async 
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "140");
 
-    // The child's aggregate grows, but its member refresh fails transiently.
     fake.setStore({
       ...family,
       stateUsage: new Map([[root, rootUsage], [child, grownChild]]),
@@ -1714,7 +1694,6 @@ test("transient member refresh failure retries on the next invalidation", async 
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "140");
 
-    // The failure clears; the next invalidation retries the incomplete member.
     fake.setStore({
       ...family,
       stateUsage: new Map([[root, rootUsage], [child, grownChild]]),
@@ -1725,9 +1704,6 @@ test("transient member refresh failure retries on the next invalidation", async 
     });
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "190");
-
-    // The recovered member leaves no retry flag behind: a further
-    // invalidation performs no branch refetch for it.
     fake.requests.length = 0;
     fake.emit("session.updated", {
       sessionID: root,
@@ -1771,14 +1747,11 @@ test("deleted session is not resurrected by a partial full refresh", async () =>
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "147");
 
-    // The child's subtree becomes unresolvable; known totals are preserved.
     fake.setStore({ ...family, serverFailures: new Set([child]) });
     fake.emit("server.connected", {});
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "147");
 
-    // The grandchild is deleted while the branch is still failing: the next
-    // full refresh must drop it instead of re-inserting the stale snapshot.
     fake.setStore({
       sessions: new Map(),
       parts: new Map(),
@@ -2051,8 +2024,6 @@ test("out-of-order queued chain attaches parent-first after initial load", async
     const model = createUsageModel(fake.api, () => root);
     await nextTask();
 
-    // Grandchild event arrives before its parent's; the server still lists
-    // nothing under the root.
     fake.emit("session.created", {
       sessionID: grandchild,
       info: fakeSession(grandchild, child, grandchildUsage),
@@ -2104,7 +2075,6 @@ test("root session switch: family resets, no leakage across roots", async () => 
     assert.equal(rowValue(model.rows(), "Input"), "700");
     assert.equal(model.includesSubagents(), false);
 
-    // And back — the family walk re-runs, child included again.
     setSessionId(rootA);
     await nextTask();
     assert.equal(rowValue(model.rows(), "Input"), "140");

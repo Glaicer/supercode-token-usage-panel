@@ -2,26 +2,14 @@ import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import type { Message, Part, Session } from "@opencode-ai/sdk/v2";
 import { createSignal } from "solid-js";
 
-/**
- * Fake TuiPluginApi for Usage Model tests: a solid-signal-backed stand-in for
- * the reactive TUI state plus throwing stubs for everything the model never
- * touches. Typed against the published @opencode-ai/plugin and
- * @opencode-ai/sdk surfaces, so an API drift fails HERE, on typecheck.
- *
- * Shortcut (deliberate): renderer/keymap/keymap-adjacent fields are identity
- * stubs behind one narrow cast — the plugin depends on none of them; their
- * internal shape drifting cannot break this plugin until it starts using them.
- */
+/** Test double for TuiPluginApi, backed by solid signals. */
 export interface FakeStore {
   sessions: Map<string, readonly Message[]>;
   parts: Map<string, readonly Part[]>;
   stateUsage?: Map<string, FakeUsage>;
   serverUsage?: Map<string, FakeUsage>;
-  /** Direct children by sessionID — what client.session.children returns. */
   children?: Map<string, readonly string[]>;
-  /** Sessions that fail session.get / session.children (per-request blackholes). */
   serverFailures?: ReadonlySet<string>;
-  /** Request-specific barriers used to exercise async ordering in tests. */
   serverDelays?: ReadonlyMap<string, Promise<void>>;
   serverError?: boolean;
 }
@@ -35,7 +23,6 @@ function fail(what: string): never {
   throw new Error(`fake-tui-api: ${what} is not implemented`)
 }
 
-/** Reverse lookup: which parent lists this sessionID as its child. */
 function findParentID(
   children: Map<string, readonly string[]> | undefined,
   sessionID: string,
@@ -126,10 +113,6 @@ function makeState(get: () => FakeStore): TuiPluginApi["state"] {
   return state
 }
 
-// Shortcut (deliberate): RGBA is a native-backed @opentui/core class that
-// cannot load headless under plain node, so the theme literal is one narrow
-// cast. The View's use of these fields stays type-checked by tsc against
-// TuiThemeCurrent; the model never reads the theme.
 const TEST_COLOR = { r: 1, g: 0, b: 0, a: 1 };
 
 const themeCurrent = {
@@ -190,13 +173,9 @@ const themeCurrent = {
 
 export interface FakeTuiApi {
   api: TuiPluginApi
-  /** Pushes a new store snapshot through a solid signal, invalidating memos. */
   setStore(next: FakeStore): void
-  /** Delivers an event to handlers registered via api.event.on. */
   emit(type: string, properties: unknown): void
-  /** Toasts recorded here instead of going to a UI. */
   readonly toasts: { variant: string; title?: string; message: string }[]
-  /** Client requests, exposed so tests can pin incremental refresh boundaries. */
   readonly requests: string[]
 }
 
@@ -283,8 +262,6 @@ export function createFakeTuiApi(initial: FakeStore): FakeTuiApi {
       signal: new AbortController().signal,
       onDispose: () => () => {},
     },
-    // Unused host giants below: identity stubs behind narrow casts. The
-    // top-level shape stays checked by the TuiPluginApi annotation above.
     keymap: {} as TuiPluginApi["keymap"],
     renderer: {} as TuiPluginApi["renderer"],
     client: {

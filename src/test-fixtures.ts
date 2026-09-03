@@ -6,12 +6,6 @@ import type {
   StepFinishPart,
 } from "@opencode-ai/sdk/v2";
 
-/**
- * Loader for the frozen history fixtures (src/fixtures/history.json):
- * real OpenCode sessions dumped once from local history, trimmed to the fields
- * this plugin reads, annotated with precomputed expected totals, then frozen.
- * Nothing here synthesizes messages; a malformed fixture fails loudly instead.
- */
 export interface ExpectedTotals {
   input: number;
   output: number;
@@ -93,7 +87,7 @@ export function loadHistoryFixtures(): HistoryFixtures {
     for (const [mid, rawParts] of Object.entries(rawSession.parts)) {
       parts.set(mid, rawParts.map((raw) => parseStepFinish(raw, mid)))
     }
-    // Every assistant message that carries step-finishes must be covered.
+    // Cover assistant messages that carry no step-finishes.
     for (const m of messages) {
       if (m.role === "assistant" && !parts.has(m.id)) {
         parts.set(m.id, [])
@@ -106,7 +100,6 @@ export function loadHistoryFixtures(): HistoryFixtures {
   return cached
 }
 
-/** Convenience: assistant message narrowed from a fixture message. */
 export function asAssistant(message: Message): AssistantMessage {
   if (message.role !== "assistant") throw new Error("fixture: expected assistant message")
   return message

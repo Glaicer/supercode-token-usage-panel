@@ -18,10 +18,8 @@ export interface UsageRow {
 
 export const USAGE_SECTION_TITLE = "Token Usage";
 
-/** Section title when descendant sessions contribute to the totals. */
 export const USAGE_SECTION_TITLE_WITH_SUBAGENTS = "Token Usage (including subagents)";
 
-/** Row labels in render order — centralized here for future localization. */
 export const USAGE_LABELS = [
   "Input",
   "Output",
@@ -35,10 +33,6 @@ export const USAGE_LABELS = [
   "Time to first token",
 ] as const;
 
-/**
- * Presentation strings for non-ready states; the View renders them as-is.
- * ("ready" never uses one — rows carry the values.)
- */
 export const USAGE_STATUS_TEXT: Record<UsageStatus, string> = {
   loading: "Loading…",
   ready: "",
@@ -46,7 +40,7 @@ export const USAGE_STATUS_TEXT: Record<UsageStatus, string> = {
   unavailable: "Usage unavailable.",
 };
 
-/** No-data placeholder: never render NaN/Infinity/0 for a missing fact. */
+/** Placeholder for missing values: never render NaN/Infinity as a number. */
 export const USAGE_DASH = "–";
 
 interface Totals {
@@ -142,7 +136,6 @@ function formatCost(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
-/** Label and value formula travel together — no positional pairing. */
 const ROW_BUILDERS: readonly {
   label: (typeof USAGE_LABELS)[number];
   value: (totals: Totals) => string;
@@ -155,7 +148,6 @@ const ROW_BUILDERS: readonly {
   { label: USAGE_LABELS[5], value: formatCacheRate },
 ];
 
-/** Completed agent steps across the family; a dash while history is unloaded. */
 function formatSteps(metrics: CompletedMetrics | undefined): string {
   if (!metrics || !positive(metrics.steps)) return USAGE_DASH;
   return formatTokens(metrics.steps);
@@ -241,7 +233,6 @@ function addCalibration(
 export interface UsageModel {
   status: () => UsageStatus;
   rows: () => readonly UsageRow[];
-  /** True when descendant sessions contribute to the totals. */
   includesSubagents: () => boolean;
 }
 
@@ -257,9 +248,7 @@ function addTotals(target: Totals, source: Totals): void {
 interface FamilyResult {
   totals?: Totals;
   metrics: CompletedMetrics;
-  /** True when at least one descendant session contributed. */
   hasDescendants: boolean;
-  /** Root plus every discovered descendant — the refresh filter set. */
   members: ReadonlySet<string>;
   contributions: ReadonlyMap<string, SessionContribution>;
   incompleteBranches: ReadonlySet<string>;
@@ -271,11 +260,6 @@ interface SessionContribution {
   parentID?: string;
 }
 
-/**
- * One sequencing snapshot shared by a full refresh and the incrementals that
- * race it: which family generation started the work, which session was
- * selected, and which incremental revisions were already applied.
- */
 interface Freshness {
   request: number;
   sessionID: string;
@@ -301,8 +285,6 @@ function completedMetrics(messages: readonly MessageWithParts[]): CompletedMetri
   const result = emptyMetrics();
   for (const { info, parts } of messages) {
     if (info.role !== "assistant") continue;
-    // A step-finish part is one completed agent step, even when the parent
-    // message has not been marked completed yet (step-finish race).
     for (const part of parts) {
       if (part.type === "step-finish") result.steps++;
     }
@@ -403,7 +385,7 @@ async function fetchContribution(
     ).data;
     metrics = completedMetrics(messages);
   } catch {
-    // Token and cost aggregates remain useful when diagnostic history is unavailable.
+    // Totals stay usable when diagnostic history cannot be read.
   }
   return {
     totals: totalsFromSession(session),
@@ -434,7 +416,6 @@ async function fetchBranch(
       }
     } catch {
       incompleteBranches.add(session.id);
-      // Retry this unresolved branch on the next family invalidation.
     }
   }
   return aggregateContributions(contributions, incompleteBranches);
@@ -472,11 +453,9 @@ function belongsToBranch(
 }
 
 /**
- * Fetches the root session, then walks its descendants breadth-first via
- * `session.children`. The visited set guards against duplicate listing (a
- * session reported as a child twice, or a cycle) so no usage is double-counted.
- * A failed descendant lookup prunes only that unresolved branch; aggregates
- * already returned by a parent remain authoritative and still contribute.
+ * Totals cover the current session plus all of its descendants (subagents).
+ * The walk counts each session once and keeps resolved aggregates when a
+ * branch fails to resolve.
  */
 async function fetchFamily(
   client: TuiPluginApi["client"],
@@ -497,10 +476,9 @@ async function fetchFamily(
 }
 
 /**
- * Usage Model over OpenCode's session aggregate. The TUI session list can lag
- * while a response is running, so usage-changing events trigger a fresh local
- * API read; request sequencing prevents slower responses from winning.
- * Totals cover the current session plus all of its descendants (subagents).
+ * Usage Model over OpenCode's session aggregate. Totals cover the current
+ * session plus all of its descendants (subagents); request sequencing keeps
+ * slower responses from overwriting newer ones.
  */
 export function createUsageModel(api: TuiPluginApi, sessionId: () => string): UsageModel {
   const [remote, setRemote] = createSignal<RemoteState>();
@@ -513,16 +491,13 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   let appliedRevision = 0;
   const contributionRevisions = new Map<string, number>();
   const pendingBranches = new Map<string, Session>();
-  /** Member ids whose last incremental get failed; retried on next invalidation. */
   const failedMembers = new Set<string>();
   /** Deleted session ids; a full refresh must never resurrect their totals. */
   const tombstones = new Set<string>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let ttftTurns = new Set<string>();
-  /** Sessions of the last confirmed family walk; membership-filtered events. */
   let members: ReadonlySet<string> = new Set();
 
-  /** A queued or live session joins the family only via a known parent. */
   const isAttachable = (session: Session): boolean =>
     !!session.parentID && members.has(session.parentID) && !members.has(session.id);
 
@@ -537,17 +512,12 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     previous: RemoteState | undefined,
     freshness: Freshness,
   ): previous is RemoteState => !!previous && isFresh(freshness);
-  /** True when an incremental touched this contribution after the work started. */
   const hasNewerIncremental = (id: string, freshness: Freshness): boolean =>
     (contributionRevisions.get(id) ?? 0) > freshness.startRevision;
   const markRevised = (ids: Iterable<string>): void => {
     const revision = ++appliedRevision;
     for (const id of ids) contributionRevisions.set(id, revision);
   };
-  /**
-   * The shared merge-and-publish tail: fold contributions, adopt the member
-   * set, and shape the remote snapshot the View reads.
-   */
   const publishFamily = (
     sessionID: string,
     contributions: ReadonlyMap<string, SessionContribution>,
@@ -612,7 +582,6 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
         if (message.time.completed !== undefined || hasFinishedStep) turns.add(message.parentID);
       }
     } catch {
-      // State can be incomplete during a session transition; live events fill it in.
     }
     return turns;
   };
@@ -655,8 +624,6 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
         });
         const deferred = [...pendingBranches.values()];
         pendingBranches.clear();
-        // Attach parent-first to a fixpoint: out-of-order queued chains resolve
-        // once their parent commits, while true orphans never attach.
         let progressed = true;
         while (deferred.length > 0 && progressed) {
           progressed = false;
@@ -732,10 +699,6 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
       .catch(() => {
         if (memberRequests.get(memberID) !== memberRequest) return;
         if (!isFresh(freshness)) return;
-        // The last confirmed contribution stays; track the failed member on
-        // its own retry list so the next family invalidation retries it. A
-        // recovered member clears its own flag on success, unlike branch
-        // failures which only a branch refetch can resolve.
         failedMembers.add(memberID);
       });
   };
@@ -795,9 +758,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
         .then(({ data }) => {
           if (data) refreshBranch(data, false);
         })
-        .catch(() => {
-          // The next invalidation retries again.
-        });
+        .catch(() => {});
     }
     for (const memberID of failedMembers) {
       if (!members.has(memberID)) {
@@ -811,8 +772,6 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     if (members.has(session.id)) return;
     if (!session.parentID) return;
     if (!remote()?.contributions) {
-      // Initial load: queue every chained session; the replay resolves
-      // out-of-order chains to a fixpoint and drops true orphans.
       members = new Set([...members, session.id]);
       pendingBranches.set(session.id, session);
       return;
