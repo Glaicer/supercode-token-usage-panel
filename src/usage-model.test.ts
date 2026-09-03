@@ -1628,6 +1628,57 @@ test("failed descendant discovery retains known members and retries on invalidat
   });
 });
 
+test("transient member refresh failure retries on the next invalidation", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_member_retry_root";
+    const child = "ses_member_retry_child";
+    const rootUsage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const childUsage = {
+      tokens: { input: 40, output: 4, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const grownChild = {
+      tokens: { input: 90, output: 9, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const family = {
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([[root, rootUsage], [child, childUsage]]),
+      children: new Map([[root, [child]]]),
+    };
+    const fake = createFakeTuiApi(family);
+    const model = createUsageModel(fake.api, () => root);
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "140");
+
+    // The child's aggregate grows, but its member refresh fails transiently.
+    fake.setStore({
+      ...family,
+      stateUsage: new Map([[root, rootUsage], [child, grownChild]]),
+      serverFailures: new Set([child]),
+    });
+    fake.emit("session.updated", {
+      sessionID: child,
+      info: fakeSession(child, root, grownChild),
+    });
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "140");
+
+    // The failure clears; the next invalidation retries the incomplete member.
+    fake.setStore({
+      ...family,
+      stateUsage: new Map([[root, rootUsage], [child, grownChild]]),
+    });
+    fake.emit("session.updated", {
+      sessionID: root,
+      info: fakeSession(root, undefined, rootUsage),
+    });
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Input"), "190");
+  });
+});
+
 test("slow full refresh cannot overwrite a newer member contribution", async () => {
   await withAsyncRoot(async () => {
     const root = "ses_full_race_root";

@@ -257,6 +257,18 @@ interface SessionContribution {
   parentID?: string;
 }
 
+/**
+ * One sequencing snapshot shared by a full refresh and the incrementals that
+ * race it: which family generation started the work, which session was
+ * selected, and which incremental revisions were already applied. A new
+ * sequencing dimension lands here, not at every call site.
+ */
+interface Freshness {
+  request: number;
+  sessionID: string;
+  startRevision: number;
+}
+
 interface MessageWithParts {
   info: Message;
   parts: readonly Part[];
@@ -399,19 +411,27 @@ async function fetchBranch(
   return aggregateContributions(contributions, incompleteBranches);
 }
 
+function walkParents(
+  sessionID: string,
+  contributions: ReadonlyMap<string, SessionContribution>,
+  matches: (id: string) => boolean,
+): boolean {
+  const visited = new Set<string>();
+  let current: string | undefined = sessionID;
+  while (current && !visited.has(current)) {
+    if (matches(current)) return true;
+    visited.add(current);
+    current = contributions.get(current)?.parentID;
+  }
+  return false;
+}
+
 function belongsToIncompleteBranch(
   sessionID: string,
   incompleteBranches: ReadonlySet<string>,
   previous: ReadonlyMap<string, SessionContribution>,
 ): boolean {
-  const visited = new Set<string>();
-  let current: string | undefined = sessionID;
-  while (current && !visited.has(current)) {
-    if (incompleteBranches.has(current)) return true;
-    visited.add(current);
-    current = previous.get(current)?.parentID;
-  }
-  return false;
+  return walkParents(sessionID, previous, (id) => incompleteBranches.has(id));
 }
 
 function belongsToBranch(
@@ -419,14 +439,7 @@ function belongsToBranch(
   rootID: string,
   contributions: ReadonlyMap<string, SessionContribution>,
 ): boolean {
-  const visited = new Set<string>();
-  let current: string | undefined = sessionID;
-  while (current && !visited.has(current)) {
-    if (current === rootID) return true;
-    visited.add(current);
-    current = contributions.get(current)?.parentID;
-  }
-  return false;
+  return walkParents(sessionID, contributions, (id) => id === rootID);
 }
 
 /**
@@ -473,7 +486,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   const [liveSpeed, setLiveSpeed] = createSignal<LiveSpeedState>();
   const [liveTtft, setLiveTtft] = createSignal<LiveTtftState>();
   let request = 0;
-  let nextMemberRequest = 0;
+  let nextAsyncRequest = 0;
   const memberRequests = new Map<string, number>();
   const branchRequests = new Map<string, number>();
   let appliedRevision = 0;
@@ -483,6 +496,25 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   let ttftTurns = new Set<string>();
   /** Sessions of the last confirmed family walk; membership-filtered events. */
   let members: ReadonlySet<string> = new Set();
+
+  /** A queued or live session joins the family only via a known parent. */
+  const isAttachable = (session: Session): boolean =>
+    !!session.parentID && members.has(session.parentID) && !members.has(session.id);
+
+  const captureFreshness = (): Freshness => ({
+    request,
+    sessionID: sessionId(),
+    startRevision: appliedRevision,
+  });
+  const isFresh = (freshness: Freshness): boolean =>
+    freshness.request === request && freshness.sessionID === sessionId();
+  /** True when an incremental touched this contribution after the work started. */
+  const hasNewerIncremental = (id: string, freshness: Freshness): boolean =>
+    (contributionRevisions.get(id) ?? 0) > freshness.startRevision;
+  const touchContributions = (ids: Iterable<string>): void => {
+    const revision = ++appliedRevision;
+    for (const id of ids) contributionRevisions.set(id, revision);
+  };
 
   const stopTimerIfIdle = () => {
     if (liveSpeed() || liveTtft() || !timer) return;
@@ -536,16 +568,15 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   };
 
   const refresh = (sessionID: string) => {
-    const current = ++request;
-    const startRevision = appliedRevision;
+    const freshness: Freshness = { request: ++request, sessionID, startRevision: appliedRevision };
     void fetchFamily(api.client, sessionID)
       .then((family) => {
-        if (current !== request || sessionId() !== sessionID) return;
+        if (!isFresh(freshness)) return;
         setRemote((previous) => {
           const contributions = new Map(family.contributions);
           if (previous?.sessionID === sessionID && previous.contributions) {
             for (const [id, revision] of contributionRevisions) {
-              if (revision <= startRevision) continue;
+              if (!hasNewerIncremental(id, freshness)) continue;
               const contribution = previous.contributions.get(id);
               if (contribution) contributions.set(id, contribution);
               else contributions.delete(id);
@@ -580,14 +611,14 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
         const pending = [...pendingBranches.values()];
         pendingBranches.clear();
         for (const session of pending) {
-          if (!session.parentID || !members.has(session.parentID) || members.has(session.id)) {
+          if (!isAttachable(session)) {
             continue;
           }
           refreshBranch(session, true);
         }
       })
       .catch(() => {
-        if (current !== request || sessionId() !== sessionID) return;
+        if (!isFresh(freshness)) return;
         setRemote((previous) =>
           previous?.sessionID === sessionID && previous.totals
             ? { ...previous, failed: true }
@@ -614,20 +645,18 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
 
   const mergeContributions = (
     additions: ReadonlyMap<string, SessionContribution>,
-    expectedRequest: number,
-    selectedSessionID: string,
+    freshness: Freshness,
   ) => {
-    if (request !== expectedRequest || sessionId() !== selectedSessionID) return;
+    if (!isFresh(freshness)) return;
     setRemote((previous) => {
-      if (previous?.sessionID !== selectedSessionID || !previous.contributions) return previous;
+      if (previous?.sessionID !== freshness.sessionID || !previous.contributions) return previous;
       const contributions = new Map(previous.contributions);
       for (const [id, contribution] of additions) contributions.set(id, contribution);
       const aggregate = aggregateContributions(contributions);
       members = aggregate.members;
-      const revision = ++appliedRevision;
-      for (const id of additions.keys()) contributionRevisions.set(id, revision);
+      touchContributions(additions.keys());
       return {
-        sessionID: selectedSessionID,
+        sessionID: freshness.sessionID,
         totals: aggregate.totals,
         metrics: aggregate.metrics,
         hasDescendants: aggregate.hasDescendants,
@@ -639,9 +668,8 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
   };
   const refreshMember = (memberID: string) => {
     if (!members.has(memberID)) return;
-    const expectedRequest = request;
-    const selectedSessionID = sessionId();
-    const memberRequest = ++nextMemberRequest;
+    const freshness = captureFreshness();
+    const memberRequest = ++nextAsyncRequest;
     memberRequests.set(memberID, memberRequest);
     void api.client.session.get({ sessionID: memberID }, { throwOnError: true })
       .then(({ data }) => {
@@ -650,27 +678,38 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
       })
       .then((contribution) => {
         if (memberRequests.get(memberID) !== memberRequest) return;
-        mergeContributions(new Map([[memberID, contribution]]), expectedRequest, selectedSessionID);
+        mergeContributions(new Map([[memberID, contribution]]), freshness);
       })
       .catch(() => {
-        // Preserve the last confirmed contribution and retry on the next event.
+        if (memberRequests.get(memberID) !== memberRequest) return;
+        if (!isFresh(freshness)) return;
+        // The last confirmed contribution stays; track the failed member so
+        // the next family invalidation retries it instead of waiting for the
+        // member's own next event.
+        setRemote((previous) => {
+          if (previous?.sessionID !== freshness.sessionID || !previous.contributions) {
+            return previous;
+          }
+          if (previous.incompleteBranches?.has(memberID)) return previous;
+          return {
+            ...previous,
+            incompleteBranches: new Set([...(previous.incompleteBranches ?? []), memberID]),
+          };
+        });
       });
   };
   const refreshBranch = (session: Session, isNew: boolean) => {
     if (isNew) members = new Set([...members, session.id]);
-    const expectedRequest = request;
-    const selectedSessionID = sessionId();
-    const branchRequest = ++nextMemberRequest;
+    const freshness = captureFreshness();
+    const branchRequest = ++nextAsyncRequest;
     branchRequests.set(session.id, branchRequest);
-    const startRevision = appliedRevision;
     void fetchBranch(api.client, session)
       .then((branch) => {
         setRemote((previous) => {
           if (
-            request !== expectedRequest ||
-            sessionId() !== selectedSessionID ||
+            !isFresh(freshness) ||
             branchRequests.get(session.id) !== branchRequest ||
-            previous?.sessionID !== selectedSessionID ||
+            previous?.sessionID !== freshness.sessionID ||
             !previous.contributions
           ) {
             return previous;
@@ -682,14 +721,14 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
               belongsToBranch(id, session.id, previous.contributions) &&
               !branch.contributions.has(id) &&
               !belongsToIncompleteBranch(id, branch.incompleteBranches, previous.contributions) &&
-              (contributionRevisions.get(id) ?? 0) <= startRevision
+              !hasNewerIncremental(id, freshness)
             ) {
               contributions.delete(id);
               changed.add(id);
             }
           }
           for (const [id, contribution] of branch.contributions) {
-            if ((contributionRevisions.get(id) ?? 0) <= startRevision) {
+            if (!hasNewerIncremental(id, freshness)) {
               contributions.set(id, contribution);
               changed.add(id);
             }
@@ -703,10 +742,9 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
           for (const id of branch.incompleteBranches) incompleteBranches.add(id);
           const aggregate = aggregateContributions(contributions, incompleteBranches);
           members = aggregate.members;
-          const revision = ++appliedRevision;
-          for (const id of changed) contributionRevisions.set(id, revision);
+          touchContributions(changed);
           return {
-            sessionID: selectedSessionID,
+            sessionID: freshness.sessionID,
             totals: aggregate.totals,
             metrics: aggregate.metrics,
             hasDescendants: aggregate.hasDescendants,
@@ -732,7 +770,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     }
   };
   const addBranch = (session: Session) => {
-    if (!session.parentID || !members.has(session.parentID) || members.has(session.id)) return;
+    if (!isAttachable(session)) return;
     if (!remote()?.contributions) {
       members = new Set([...members, session.id]);
       pendingBranches.set(session.id, session);
@@ -760,7 +798,7 @@ export function createUsageModel(api: TuiPluginApi, sessionId: () => string): Us
     for (const id of pruned) {
       pendingBranches.delete(id);
       if (branchRequests.has(id)) {
-        branchRequests.set(id, ++nextMemberRequest);
+        branchRequests.set(id, ++nextAsyncRequest);
       }
     }
     if (tracked) {
