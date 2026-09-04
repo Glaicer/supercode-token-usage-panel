@@ -180,7 +180,7 @@ function buildUsageRows(totals: Totals, metrics: CompletedMetrics | undefined): 
 }
 
 function formatLiveSpeed(live: LiveSpeedState): string {
-  if (!live.hasTicked) return `~${USAGE_DASH}`;
+  if (!live.hasTicked) return `${USAGE_DASH}`;
   const elapsed = (live.now - live.startedAt) / 1_000;
   const value = live.displayedChars / live.charsPerToken / elapsed;
   const rounded = Math.round(value);
