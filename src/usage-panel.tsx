@@ -3,8 +3,9 @@
  * Usage of the current session family: token totals, cache rate, completed
  * step count, generation speed/TTFT, and provisional diagnostics for the
  * visible stream.
- * Family totals include all subagent descendants; when they contribute the
- * section title becomes "Token Usage (including subagents)".
+ * Family totals include all subagent descendants; when the current session
+ * itself has descendant sessions the section title becomes
+ * "Token Usage (including subagents)", otherwise it stays "Token Usage".
  *
  * This file is only the View plus slot registration: it computes no numbers
  * and formats nothing — all logic lives in ./usage-model.ts (the tested seam).

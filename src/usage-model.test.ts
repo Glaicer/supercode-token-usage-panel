@@ -1304,7 +1304,57 @@ test("opening a descendant resolves the root and includes the whole family", asy
 
     assert.equal(model.status(), "ready");
     assert.equal(rowValue(model.rows(), "Input"), "147");
-    assert.ok(model.includesSubagents());
+    // Totals still cover the whole family, but the title suffix is reserved
+    // for sessions that launched subagents themselves: the viewed child has
+    // no descendants of its own (the sibling is not its subagent).
+    assert.equal(model.includesSubagents(), false);
+  });
+});
+
+test("title suffix only when the viewed session has descendants", async () => {
+  await withAsyncRoot(async () => {
+    const root = "ses_title_root";
+    const child = "ses_title_child";
+    const grandchild = "ses_title_grandchild";
+    const usage = {
+      tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const childUsage = {
+      tokens: { input: 40, output: 4, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const grandchildUsage = {
+      tokens: { input: 7, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+    };
+    const store = {
+      sessions: new Map(),
+      parts: new Map(),
+      stateUsage: new Map([
+        [root, usage],
+        [child, childUsage],
+        [grandchild, grandchildUsage],
+      ]),
+      children: new Map([
+        [root, [child]],
+        [child, [grandchild]],
+      ]),
+    };
+    const [sessionID, setSessionID] = createSignal(root);
+    const fake = createFakeTuiApi(store);
+    const model = createUsageModel(fake.api, sessionID, solid);
+    await nextTask();
+
+    // Root launched a subagent chain.
+    assert.equal(model.includesSubagents(), true);
+
+    // Middle session launched its own subagent.
+    setSessionID(child);
+    await nextTask();
+    assert.equal(model.includesSubagents(), true);
+
+    // Leaf session launched nothing: plain "Token Usage".
+    setSessionID(grandchild);
+    await nextTask();
+    assert.equal(model.includesSubagents(), false);
   });
 });
 

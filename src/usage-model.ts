@@ -350,9 +350,27 @@ function addMetrics(target: CompletedMetrics, source: CompletedMetrics): void {
   }
 }
 
+/**
+ * Whether the viewed session launched subagents: at least one other member of
+ * the family descends from it. Siblings and ancestors do not count, so the
+ * section title stays "Token Usage" unless the current session itself has
+ * descendants.
+ */
+function hasCurrentDescendant(
+  viewedID: string,
+  contributions: ReadonlyMap<string, SessionContribution>,
+): boolean {
+  for (const id of contributions.keys()) {
+    if (id === viewedID) continue;
+    if (belongsToBranch(id, viewedID, contributions)) return true;
+  }
+  return false;
+}
+
 function aggregateContributions(
   contributions: ReadonlyMap<string, SessionContribution>,
   incompleteBranches: ReadonlySet<string> = new Set(),
+  viewedID?: string,
 ): FamilyResult {
   let totals: Totals | undefined;
   const metrics = emptyMetrics();
@@ -367,7 +385,9 @@ function aggregateContributions(
   return {
     totals,
     metrics,
-    hasDescendants: members.size > 1,
+    hasDescendants: viewedID
+      ? hasCurrentDescendant(viewedID, contributions)
+      : members.size > 1,
     members,
     contributions,
     incompleteBranches,
@@ -418,7 +438,7 @@ async function fetchBranch(
       incompleteBranches.add(session.id);
     }
   }
-  return aggregateContributions(contributions, incompleteBranches);
+  return aggregateContributions(contributions, incompleteBranches, root.id);
 }
 
 function walkParents(
@@ -545,7 +565,7 @@ export function createUsageModel(
     contributions: ReadonlyMap<string, SessionContribution>,
     incompleteBranches: ReadonlySet<string> | undefined,
   ): RemoteState => {
-    const aggregate = aggregateContributions(contributions, incompleteBranches);
+    const aggregate = aggregateContributions(contributions, incompleteBranches, sessionID);
     members = aggregate.members;
     return {
       sessionID,
