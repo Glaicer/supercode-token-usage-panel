@@ -8,6 +8,13 @@ package is a breaking migration of the v1 plugin, which stays available as
 `usage-panel.tsx` passes the real `Plugin.Context`, so `npm run typecheck`
 fails if the slice drifts from the host API.
 
+In v2, `session.step.streamed` / `message.time.streamed` marks **stream end**,
+not first token (verified against 2.0.16 session history and runner). Measure
+decode from the first content-start event to stream end; tool execution can
+overlap streaming. Historical text items have no start timestamp: use the
+first reasoning/tool item's `time.created` only when it is the content head,
+otherwise omit that diagnostic sample.
+
 ## TUI Package Build
 
 Published packages must export `./dist/usage-panel.js`, never raw TSX under

@@ -147,22 +147,116 @@ test("completed generation speed is weighted and excludes TTFT and tool time", a
   await withAsyncRoot(async () => {
     const sid = "ses_speed";
     const first = fakeAssistant("msg_speed_1", {
-      time: { created: 1_000, streamed: 2_000, completed: 5_000 },
-      content: [fakeText("first"), fakeCompletedTool(3_000, 3_000, 4_000)],
+      time: { created: 1_000, streamed: 4_000, completed: 5_000 },
+      content: [fakeReasoning("first", 2_000, 3_000), fakeCompletedTool(3_000, 3_000, 5_000)],
       tokens: tokens(0, 80, 20),
     });
     const second = fakeAssistant("msg_speed_2", {
-      time: { created: 10_000, streamed: 11_000, completed: 15_000 },
-      content: [fakeText("second")],
+      time: { created: 10_000, streamed: 15_000, completed: 15_001 },
+      content: [fakeReasoning("second", 11_000, 15_000)],
       tokens: tokens(0, 150, 50),
     });
     const fake = createFakeTuiApi({ sessions: new Map([[sid, [first, second]]]) });
     const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
 
-    // 300 generated tokens / ((4-1-1) + (5-1)) seconds = 50 tps.
+    // 300 generated tokens / (2 + 4) seconds = 50 tps.
     assert.equal(rowValue(model.rows(), "Generation speed"), "50 tps");
     assert.equal(rowValue(model.rows(), "Time to first token"), "1.0s");
+  });
+});
+
+test("overlapping tool calls cannot inflate completed generation speed", async () => {
+  await withAsyncRoot(async () => {
+    const sid = "ses_parallel_speed";
+    const message = fakeAssistant("msg_parallel_speed", {
+      time: { created: 1_000, streamed: 4_000, completed: 6_001 },
+      content: [
+        fakeReasoning("done", 2_000, 4_000),
+        fakeCompletedTool(4_000, 4_000, 6_000),
+        fakeCompletedTool(4_001, 4_001, 6_001),
+      ],
+      tokens: tokens(0, 80, 20),
+    });
+    const fake = createFakeTuiApi({ sessions: new Map([[sid, [message]]]) });
+    const model = createUsageModel(fake.api, () => sid, solid);
+    await nextTask();
+
+    assert.equal(rowValue(model.rows(), "Generation speed"), "50 tps");
+  });
+});
+
+test("stream end is not first token, including interrupted and tool-only steps", async () => {
+  for (const finish of ["stop", "error", "tool-calls"] as const) {
+    await withAsyncRoot(async () => {
+      const sid = "ses_stream_end";
+      const message = fakeAssistant("msg_stream_end", {
+        finish,
+        time: { created: 1_000, streamed: 4_000, completed: 4_001 },
+        content: finish === "tool-calls"
+          ? [fakeCompletedTool(2_000, 3_000, 4_000)]
+          : [fakeReasoning("thinking", 2_000, 3_000), fakeText("done")],
+        tokens: tokens(0, 80, 20),
+      });
+      const fake = createFakeTuiApi({ sessions: new Map([[sid, [message]]]) });
+      const model = createUsageModel(fake.api, () => sid, solid);
+      await nextTask();
+
+      assert.equal(rowValue(model.rows(), "Generation speed"), "50 tps");
+      assert.equal(rowValue(model.rows(), "Time to first token"), "1.0s");
+    });
+  }
+});
+
+test("text-first history without first-output timing does not fabricate diagnostics", async () => {
+  await withAsyncRoot(async () => {
+    const sid = "ses_no_first_output";
+    const message = fakeAssistant("msg_no_first_output", {
+      time: { created: 1_000, streamed: 4_000, completed: 4_001 },
+      content: [fakeText("answer"), fakeReasoning("later", 3_000, 4_000)],
+      tokens: tokens(0, 80, 20),
+    });
+    const fake = createFakeTuiApi({ sessions: new Map([[sid, [message]]]) });
+    const model = createUsageModel(fake.api, () => sid, solid);
+    await nextTask();
+
+    assert.equal(rowValue(model.rows(), "Generation speed"), "–");
+    assert.equal(rowValue(model.rows(), "Time to first token"), "–");
+    assert.equal(rowValue(model.rows(), "Output"), "80");
+    assert.equal(rowValue(model.rows(), "Steps"), "1");
+  });
+});
+
+test("live first-output events time text-first steps through completion and refresh", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 1_000 });
+  await withAsyncRoot(async () => {
+    const sid = "ses_first_output";
+    const live = fakeLiveAssistant("msg_first_output", 1_000);
+    const usage = new Map([[sid, { tokens: tokens(0, 80, 20) }]]);
+    const fake = createFakeTuiApi({ sessions: new Map([[sid, [live]]]), stateUsage: usage });
+    const model = createUsageModel(fake.api, () => sid, solid);
+    await nextTask();
+    t.mock.timers.tick(1_000);
+    fake.emit("session.text.started", { sessionID: sid, assistantMessageID: live.id, ordinal: 0 });
+    assert.equal(rowValue(model.rows(), "Time to first token"), "–");
+    t.mock.timers.tick(1_000);
+    fake.emit("session.reasoning.started", { sessionID: sid, assistantMessageID: live.id, ordinal: 0 });
+    t.mock.timers.tick(1_000);
+    fake.emit("session.step.streamed", { sessionID: sid, assistantMessageID: live.id });
+    const completed = fakeAssistant(live.id, {
+      time: { created: 1_000, streamed: 4_000, completed: 60_000 },
+      content: [fakeText("answer"), fakeCompletedTool(3_000, 4_000, 60_000)],
+      tokens: tokens(0, 80, 20),
+    });
+    fake.setStore({ sessions: new Map([[sid, [completed]]]), stateUsage: usage });
+    fake.emit("session.step.ended", { sessionID: sid, assistantMessageID: live.id });
+    await nextTask();
+
+    assert.equal(rowValue(model.rows(), "Generation speed"), "50 tps");
+    assert.equal(rowValue(model.rows(), "Time to first token"), "1.0s");
+    fake.emit("server.connected", {});
+    await nextTask();
+    assert.equal(rowValue(model.rows(), "Generation speed"), "50 tps");
   });
 });
 
@@ -171,8 +265,8 @@ test("live diagnostics tick from Unicode deltas using a snapshotted model calibr
   await withAsyncRoot(async () => {
     const sid = "ses_live_speed";
     const completed = fakeAssistant("msg_calibration", {
-      time: { created: 1_000, streamed: 2_000, completed: 3_000 },
-      content: [fakeText("x".repeat(600))],
+      time: { created: 1_000, streamed: 3_000, completed: 3_001 },
+      content: [fakeReasoning("x".repeat(600), 2_000, 3_000)],
       tokens: tokens(0, 80, 20),
     });
     const turnStart = fakeUser("msg_live_parent", 18_000);
@@ -203,8 +297,8 @@ test("live diagnostics tick from Unicode deltas using a snapshotted model calibr
     assert.equal(rowValue(model.rows(), "Live speed"), "~2 tps");
 
     const recalibrated = fakeAssistant("msg_calibration", {
-      time: { created: 1_000, streamed: 2_000, completed: 3_000 },
-      content: [fakeText("x".repeat(1_600))],
+      time: { created: 1_000, streamed: 3_000, completed: 3_001 },
+      content: [fakeReasoning("x".repeat(1_600), 2_000, 3_000)],
       tokens: tokens(0, 80, 20),
     });
     fake.setStore({ sessions: new Map([[sid, [recalibrated, turnStart, live]]]) });
@@ -414,7 +508,7 @@ test("invalid steps are skipped and stream gaps stay in the decode denominator",
   await withAsyncRoot(async () => {
     const sid = "ses_speed_boundaries";
     const valid = fakeAssistant("msg_speed_valid", {
-      time: { created: 1_000, streamed: 2_000, completed: 5_000 },
+      time: { created: 1_000, streamed: 5_000, completed: 5_001 },
       content: [fakeReasoning("reasoning", 2_000, 2_500), fakeText("text")],
       tokens: tokens(0, 50, 50),
     });
@@ -425,12 +519,12 @@ test("invalid steps are skipped and stream gaps stay in the decode denominator",
     });
     const zeroTokens = fakeAssistant("msg_speed_zero_tokens", {
       time: { created: 20_000, streamed: 21_000, completed: 22_000 },
-      content: [fakeText("done")],
+      content: [fakeReasoning("done", 21_000, 21_000)],
       tokens: tokens(0, 0, 0),
     });
     const zeroDecode = fakeAssistant("msg_speed_zero_decode", {
       time: { created: 30_000, streamed: 31_000, completed: 32_000 },
-      content: [fakeText("done"), fakeCompletedTool(31_000, 31_000, 32_000)],
+      content: [fakeReasoning("done", 31_000, 31_000), fakeCompletedTool(31_000, 31_000, 32_000)],
       tokens: tokens(0, 100, 0),
     });
     const fake = createFakeTuiApi({
@@ -528,8 +622,8 @@ test("completed step update refreshes metrics after a settling race", async () =
     assert.equal(rowValue(model.rows(), "Generation speed"), "–");
 
     const completed = fakeAssistant("msg_completion_race", {
-      time: { created: 1_000, streamed: 2_000, completed: 3_000 },
-      content: [fakeText("done")],
+      time: { created: 1_000, streamed: 3_000, completed: 3_001 },
+      content: [fakeReasoning("done", 2_000, 3_000)],
       tokens: tokens(0, 100, 0),
     });
     fake.setStore({ sessions: new Map([[sid, [completed]]]), stateUsage: initial.stateUsage });
@@ -556,8 +650,8 @@ test("completed descendant step update refreshes family diagnostics", async () =
     assert.equal(rowValue(model.rows(), "Generation speed"), "–");
 
     const completed = fakeAssistant("msg_descendant_completion", {
-      time: { created: 1_000, streamed: 2_000, completed: 3_000 },
-      content: [fakeText("done")],
+      time: { created: 1_000, streamed: 3_000, completed: 3_001 },
+      content: [fakeReasoning("done", 2_000, 3_000)],
       tokens: tokens(0, 100, 0),
     });
     fake.setStore({ ...initial, sessions: new Map([[child, [completed]]]) });
@@ -573,8 +667,8 @@ test("positive speeds that round to zero render as unavailable", async (t) => {
   await withAsyncRoot(async () => {
     const sid = "ses_rounds_to_zero";
     const completed = fakeAssistant("msg_rounds_to_zero", {
-      time: { created: 1_000, streamed: 2_000, completed: 4_500 },
-      content: [fakeText("done")],
+      time: { created: 1_000, streamed: 4_500, completed: 4_501 },
+      content: [fakeReasoning("done", 2_000, 4_500)],
       tokens: tokens(0, 1, 0),
     });
     const live = fakeLiveAssistant("msg_live_rounds_to_zero", 89_000);
@@ -854,11 +948,13 @@ test("subagent children: descendant usage merges into the root totals", async ()
     const sid = "ses_family";
     const child = "ses_family_child";
     const message = fakeAssistant("msg_family", {
-      content: [fakeText("root")],
+      time: { created: 1_000, streamed: 2_000, completed: 2_001 },
+      content: [fakeReasoning("root", 1_100, 2_000)],
       tokens: tokens(100, 10, 5, 200, 0),
     });
     const childMessage = fakeAssistant("msg_family_child", {
-      content: [fakeText("child")],
+      time: { created: 1_000, streamed: 2_000, completed: 2_001 },
+      content: [fakeReasoning("child", 1_100, 2_000)],
       tokens: tokens(50, 20, 0, 0, 60),
     });
     const fake = createFakeTuiApi({

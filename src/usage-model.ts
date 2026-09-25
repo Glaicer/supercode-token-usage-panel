@@ -6,9 +6,9 @@
  * deltas. Exposes only ready-to-render rows plus a state flag.
  *
  * OpenCode v2 shape: one assistant message = one model step, so per-step tokens
- * live on `message.tokens` (there are no `step-finish` parts) and TTFT is
- * `message.time.streamed - message.time.created` (`time.streamed` is set by
- * `session.step.streamed`, the first streamed token).
+ * live on `message.tokens` (there are no `step-finish` parts). `time.streamed`
+ * marks the end of the provider stream; first output comes from content-start
+ * events or the timestamp of the first reasoning/tool content item.
  */
 import type * as Solid from "solid-js";
 import type {
@@ -98,6 +98,9 @@ type UsageEventType =
   | "session.step.streamed"
   | "session.step.ended"
   | "session.step.failed"
+  | "session.text.started"
+  | "session.reasoning.started"
+  | "session.tool.input.started"
   | "session.text.delta"
   | "session.text.ended"
   | "session.reasoning.delta"
@@ -350,7 +353,10 @@ function finishedStep(message: SessionMessageAssistant): boolean {
   return message.tokens !== undefined || message.time.completed !== undefined;
 }
 
-function completedMetrics(messages: readonly SessionMessageInfo[]): CompletedMetrics {
+function completedMetrics(
+  messages: readonly SessionMessageInfo[],
+  firstOutputs: ReadonlyMap<string, number>,
+): CompletedMetrics {
   const result = emptyMetrics();
   for (const info of messages) {
     if (info.type !== "assistant") continue;
@@ -375,25 +381,19 @@ function completedMetrics(messages: readonly SessionMessageInfo[]): CompletedMet
       );
     }
 
-    // Without streamed timing there is no first-token sample and no decode
-    // baseline, so the step contributes steps/calibration only.
     const streamed = info.time.streamed;
     if (!positive(streamed ?? 0)) continue;
-    const visible = info.content.some((item) => item.type === "text" || item.type === "reasoning");
-    if (!visible) continue;
-    const ttft = (streamed as number) - info.time.created;
-    if (!positive(ttft)) continue;
+    const head = info.content[0];
+    const first = firstOutputs.get(info.id) ??
+      (head && head.type !== "text" ? head.time?.created : undefined);
+    if (first === undefined || first < info.time.created || first > (streamed as number)) continue;
+    const ttft = first - info.time.created;
 
     result.ttftMs += ttft;
     result.ttftCount++;
 
     const generated = info.tokens ? info.tokens.output + info.tokens.reasoning : 0;
-    const tools = info.content.reduce((sum, item) => {
-      if (item.type !== "tool" || item.state.status !== "completed") return sum;
-      const duration = (item.time.completed ?? 0) - (item.time.ran ?? item.time.created);
-      return positive(duration) ? sum + duration : sum;
-    }, 0);
-    const decode = (info.time.completed as number) - info.time.created - ttft - tools;
+    const decode = (streamed as number) - first;
     if (!positive(generated) || !positive(decode)) continue;
     result.generated += generated;
     result.decodeMs += decode;
@@ -473,10 +473,11 @@ async function listAllMessages(
 async function fetchContribution(
   client: UsageApi["client"],
   session: SessionInfo,
+  firstOutputs: ReadonlyMap<string, number>,
 ): Promise<SessionContribution> {
   let metrics = emptyMetrics();
   try {
-    metrics = completedMetrics(await listAllMessages(client, session.id));
+    metrics = completedMetrics(await listAllMessages(client, session.id), firstOutputs);
   } catch {
     // Totals stay usable when diagnostic history cannot be read.
   }
@@ -490,6 +491,7 @@ async function fetchContribution(
 async function fetchBranch(
   client: UsageApi["client"],
   root: SessionInfo,
+  firstOutputs: ReadonlyMap<string, number>,
 ): Promise<FamilyResult> {
   const contributions = new Map<string, SessionContribution>();
   const incompleteBranches = new Set<string>();
@@ -499,7 +501,7 @@ async function fetchBranch(
     const session = queue.shift() as SessionInfo;
     if (visited.has(session.id)) continue;
     visited.add(session.id);
-    contributions.set(session.id, await fetchContribution(client, session));
+    contributions.set(session.id, await fetchContribution(client, session, firstOutputs));
     try {
       const children = (await client.session.list({ parentID: session.id })).data;
       for (const child of children) {
@@ -551,6 +553,7 @@ function belongsToBranch(
 async function fetchFamily(
   client: UsageApi["client"],
   sessionID: string,
+  firstOutputs: ReadonlyMap<string, number>,
 ): Promise<FamilyResult> {
   let root = await client.session.get({ sessionID });
   if (!root) throw new Error("session unavailable");
@@ -561,7 +564,7 @@ async function fetchFamily(
     if (!parent) throw new Error("parent session unavailable");
     root = parent;
   }
-  return fetchBranch(client, root);
+  return fetchBranch(client, root, firstOutputs);
 }
 
 /**
@@ -609,6 +612,7 @@ export function createUsageModel(
   const tombstones = new Set<string>();
   /** Content items whose stream already ended; stale deltas must not restart them. */
   const endedParts = new Set<string>();
+  const firstOutputs = new Map<string, number>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let ttftTurnShown = false;
   let members: ReadonlySet<string> = new Set();
@@ -717,7 +721,7 @@ export function createUsageModel(
 
   const refresh = (sessionID: string) => {
     const freshness: Freshness = { request: ++request, sessionID, startRevision: appliedRevision };
-    void fetchFamily(api.client, sessionID)
+    void fetchFamily(api.client, sessionID, firstOutputs)
       .then((family) => {
         if (!isFresh(freshness)) return;
         setRemote((previous) => {
@@ -791,6 +795,7 @@ export function createUsageModel(
     failedMembers.clear();
     tombstones.clear();
     endedParts.clear();
+    firstOutputs.clear();
     setRemote(undefined);
     solid.untrack(() => {
       const turn = scanTurnState(sessionID);
@@ -830,7 +835,7 @@ export function createUsageModel(
     void api.client.session.get({ sessionID: memberID })
       .then((data) => {
         if (!data) throw new Error("session unavailable");
-        return fetchContribution(api.client, data);
+        return fetchContribution(api.client, data, firstOutputs);
       })
       .then((contribution) => {
         if (memberRequests.get(memberID) !== memberRequest) return;
@@ -850,7 +855,7 @@ export function createUsageModel(
     void api.client.session.get({ sessionID: branchID })
       .then((root) => {
         if (!root) throw new Error("session unavailable");
-        return fetchBranch(api.client, root);
+        return fetchBranch(api.client, root, firstOutputs);
       })
       .then((branch) => {
         setRemote((previous) => {
@@ -986,6 +991,7 @@ export function createUsageModel(
   });
   const offStepStarted = api.data.on("session.step.started", (event) => {
     const { sessionID, assistantMessageID, started } = event.data;
+    if (members.has(sessionID)) firstOutputs.delete(assistantMessageID);
     if (sessionID !== sessionId()) return;
     if (ttftTurnShown) return;
     ttftTurnShown = true;
@@ -1001,6 +1007,17 @@ export function createUsageModel(
     if (sessionID !== sessionId()) return;
     if (liveTtft()?.messageID === assistantMessageID) clearLiveTtft();
   });
+  const onOutputStarted = (event: Extract<OpenCodeEvent, {
+    type: "session.text.started" | "session.reasoning.started" | "session.tool.input.started";
+  }>) => {
+    const { sessionID, assistantMessageID } = event.data;
+    if (!members.has(sessionID)) return;
+    if (!firstOutputs.has(assistantMessageID)) firstOutputs.set(assistantMessageID, event.created);
+    if (sessionID === sessionId() && liveTtft()?.messageID === assistantMessageID) clearLiveTtft();
+  };
+  const offTextStarted = api.data.on("session.text.started", onOutputStarted);
+  const offReasoningStarted = api.data.on("session.reasoning.started", onOutputStarted);
+  const offToolInputStarted = api.data.on("session.tool.input.started", onOutputStarted);
   const onStepSettled = (sessionID: string, assistantMessageID: string) => {
     if (sessionID === sessionId()) {
       if (liveTtft()?.messageID === assistantMessageID) clearLiveTtft();
@@ -1102,6 +1119,9 @@ export function createUsageModel(
     offStepStarted();
     offExecutionStarted();
     offStepStreamed();
+    offTextStarted();
+    offReasoningStarted();
+    offToolInputStarted();
     offStepEnded();
     offStepFailed();
     offTextDelta();
