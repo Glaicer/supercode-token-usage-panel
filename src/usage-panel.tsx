@@ -15,7 +15,7 @@
  */
 /** @jsxImportSource @opentui/solid */
 import { createEffect, createMemo, createSignal, For, onCleanup, Show, untrack } from "solid-js";
-import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui";
+import { Plugin } from "@opencode/plugin/tui";
 import {
   USAGE_SECTION_TITLE,
   USAGE_SECTION_TITLE_WITH_SUBAGENTS,
@@ -32,28 +32,28 @@ import {
  */
 const solid: SolidRuntime = { createSignal, createMemo, createEffect, onCleanup, untrack };
 
-function Section(props: { api: TuiPluginApi; session_id: string }) {
-  const theme = () => props.api.theme.current;
+function Section(props: { context: Plugin.Context; sessionID: string }) {
+  const theme = () => props.context.theme;
   const [collapsed, setCollapsed] = createSignal(false);
-  const model = createUsageModel(props.api, () => props.session_id, solid);
+  const model = createUsageModel(props.context, () => props.sessionID, solid);
 
   return (
     <box>
       <box flexDirection="row" gap={1} onMouseDown={() => setCollapsed(!collapsed())}>
-        <text fg={theme().text}>{collapsed() ? "▶" : "▼"}</text>
-        <text fg={theme().text}>
+        <text fg={theme().text.base}>{collapsed() ? "▶" : "▼"}</text>
+        <text fg={theme().text.base}>
           <b>{model.includesSubagents() ? USAGE_SECTION_TITLE_WITH_SUBAGENTS : USAGE_SECTION_TITLE}</b>
         </text>
       </box>
       <Show when={!collapsed()}>
         <Show when={model.status() !== "ready"}>
-          <text fg={theme().textMuted}>{USAGE_STATUS_TEXT[model.status()]}</text>
+          <text fg={theme().text.muted}>{USAGE_STATUS_TEXT[model.status()]}</text>
         </Show>
         <For each={model.rows()}>
           {(row) => (
             <box flexDirection="row" justifyContent="space-between">
-              <text fg={theme().textMuted}>{row.label}</text>
-              <text fg={theme().text}>{row.value}</text>
+              <text fg={theme().text.muted}>{row.label}</text>
+              <text fg={theme().text.base}>{row.value}</text>
             </box>
           )}
         </For>
@@ -62,22 +62,16 @@ function Section(props: { api: TuiPluginApi; session_id: string }) {
   );
 }
 
-const tui: TuiPlugin = async (api) => {
-  // Order 150: internal sidebar sections sit at 100/200/300/400/500, so this
-  // lands right after the first block without moving any existing section.
-  api.slots.register({
-    order: 150,
-    slots: {
-      sidebar_content(_ctx, props) {
-        return <Section api={api} session_id={props.session_id} />;
-      },
-    },
-  });
-};
-
-const plugin: TuiPluginModule = {
+export default Plugin.define({
   id: "supercode.token-usage",
-  tui,
-};
-
-export default plugin;
+  setup(context) {
+    // `after`, not `append`: a replace takeover of this path (e.g.
+    // context-progress-bar's hideMcp) suppresses every append/prepend claim
+    // on it, while before/after claims render as siblings around the
+    // boundary. Content still lands below the built-in sidebar sections.
+    context.ui.slot({
+      after: "sidebar.content",
+      render: (props) => <Section context={context} sessionID={props.sessionID} />,
+    });
+  },
+});

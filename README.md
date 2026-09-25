@@ -9,28 +9,28 @@ An OpenCode plugin that adds a collapsible `Token Usage` section to the TUI sess
 
 Totals fold in the whole session family: the parent session plus all subagent descendants, from OpenCode's own `session.tokens` / `session.cost` aggregates. When descendants contribute, their usage sums up with parent agent usage.
 
+Requires OpenCode v2 (`>=2.0.0`). On OpenCode v1 stay on `@glaicer/supercode-token-usage-panel@0.1.4`.
+
 ## Install
 
-Install with the OpenCode CLI — it detects the TUI target and registers the plugin in `tui.json` for you:
+Install with the OpenCode CLI — it installs the package and registers the plugin in the global CLI configuration (`~/.config/opencode/cli.json`):
 
 ```bash
-opencode plugin @glaicer/supercode-token-usage-panel
+opencode plugin add @glaicer/supercode-token-usage-panel
 ```
 
-- `--global` installs into the global config (`~/.config/opencode`); default is local (`.opencode` in the current project).
-- `--force` replaces an already-installed version.
-- Restart OpenCode after installing.
-
-Manual install also works: add the package to the `plugin` array in `tui.json` (global `~/.config/opencode/tui.json` or local `<project>/.opencode/tui.json`):
-
-```jsonc
-{
-  "plugin": ["@glaicer/supercode-token-usage-panel"]
-}
-```
+Restart OpenCode after installing.
 
 > [!IMPORTANT]
 > **The first OpenCode load after installing this plugin may be slow.** That's OpenCode downloading the plugin's packages and managed tools into its cache — it happens once. Every subsequent start is fast.
+
+Manual install also works: add the package to the `plugins` array in `~/.config/opencode/cli.json`:
+
+```jsonc
+{
+  "plugins": ["@glaicer/supercode-token-usage-panel"]
+}
+```
 
 ## Development
 

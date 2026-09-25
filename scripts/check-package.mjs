@@ -13,7 +13,7 @@ assert.equal(target, "./dist/usage-panel.js", "./tui must export compiled JavaSc
 const entry = readFileSync(resolve(root, target), "utf8");
 assert.doesNotMatch(entry, /<(?:box|text)\b/, "compiled entry must not contain raw JSX");
 assert.doesNotMatch(entry, /from ["'][^"']+\.tsx?["']/, "compiled entry must not import TypeScript");
-assert.match(entry, /get session_id\(\)/, "Solid transform must preserve the session_id getter");
+assert.match(entry, /get sessionID\(\)/, "Solid transform must preserve the sessionID getter");
 assert.match(entry, /get when\(\)/, "Solid transform must preserve reactive Show getters");
 
 const packed = JSON.parse(
