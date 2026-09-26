@@ -25,6 +25,11 @@ const packed = JSON.parse(
 const pack = Array.isArray(packed) ? packed[0] : packed[manifest.name] ?? Object.values(packed)[0];
 const files = pack.files.map((file) => file.path);
 
+assert.ok(files.includes("dist/index.js"), "tarball must include the server entry");
+// A directory target never consults exports, so both root entries must ship or
+// the host resolves no TUI entrypoint and never reports features.tui.
+assert.ok(files.includes("index.ts"), "tarball must include the root server entry for directory targets");
+assert.ok(files.includes("tui.js"), "tarball must include the root TUI entry for directory targets");
 assert.ok(files.includes("dist/usage-panel.js"), "tarball must include the compiled TUI entry");
 assert.ok(files.includes("dist/usage-model.js"), "tarball must include the compiled model");
 assert.ok(!files.some((file) => file.startsWith("src/")), "tarball must not include raw source files");

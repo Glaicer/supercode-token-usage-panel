@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = resolve(root, "dist");
-const sources = ["usage-model.ts", "usage-panel.tsx"];
+const sources = ["index.ts", "usage-model.ts", "usage-panel.tsx"];
 
 function rewriteTypeScriptExtensions() {
   const rewrite = (path) => {

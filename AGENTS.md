@@ -33,15 +33,28 @@ tarball.
 ## Local install (pre-publish testing)
 
 `opencode plugin add` accepts only npm/Git specs. To run the working tree,
-add this repo's absolute path to `plugins` in `~/.config/opencode/cli.json`:
-a directory target resolves `<dir>/tui.*` and never consults package.json
-`exports["./tui"]`, so the root `tui.js` (one-line re-export of
-`./dist/usage-panel.js`; excluded from the tarball by `files: ["dist"]`) is
-required. Verified 2026-09-25 on opencode 2.0.16 (Bun binary): the host
-rewrites `solid-js` / `@opentui/*` for non-`node_modules` files as well, so
-loading from the repo shares the host Solid instance, and a `dist` rebuild
-hot-reloads in a running TUI (`stage=read` → `cleanup` → `setup` in the
-`role=cli` log; no restart needed).
+add this repo's absolute path to `plugins` in `~/.config/opencode/opencode.jsonc`
+(never `cli.json` — see Registration). A directory target resolves
+`<dir>/index.{ts,js}` for the server and `<dir>/tui.*` for the TUI and never
+consults package.json `exports`, so the root `index.ts` / `tui.js` (one-line
+re-exports of the built files) are required. Verified 2026-09-25 on opencode
+2.0.16 (Bun binary): the host rewrites `solid-js` / `@opentui/*` for non-`node_modules`
+files as well, so loading from the repo shares the host Solid instance, and a
+`dist` rebuild hot-reloads in a running TUI (`stage=read` → `cleanup` → `setup`
+in the `role=cli` log; no restart needed).
+
+## Registration
+
+The panel claims `after: "sidebar.content"`, shared with other sidebar plugins,
+and the host renders same-anchor claims in registration order: `opencode.jsonc`
+entries first, then `cli.json`. The panel therefore has to be registered in
+`opencode.jsonc` to be placeable relative to another sidebar plugin — a
+`cli.json`-only entry always sorts last. That is the whole reason for the no-op
+`src/index.ts` server half: the server only reports `features.tui` for a package
+it resolved through its server entry, and a `./tui`-only package cannot be
+registered in `opencode.jsonc` at all (the server raises `LoadError: Plugin
+entrypoint not found`). `opencode plugin add` picks its target from the
+entrypoints, so it now writes to `opencode.jsonc` on its own.
 
 ## Verification
 
