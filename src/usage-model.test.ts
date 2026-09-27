@@ -107,6 +107,10 @@ function fakeUser(id: string, created: number): SessionMessageInfo {
   return { id, type: "user", time: { created }, text: "" };
 }
 
+function fakeIdle(id: string, created: number): SessionMessageInfo {
+  return { id, type: "idle", time: { created }, outcome: "succeeded" };
+}
+
 function fakeText(text: string): SessionMessageAssistant["content"][number] {
   return { type: "text", text };
 }
@@ -504,6 +508,111 @@ test("switching into a session mid-turn does not restart live TTFT", async (t) =
   });
 });
 
+test("elapsed time runs with the turn, freezes at turn stop and resets on a new turn", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 100_000 });
+  await withAsyncRoot(async () => {
+    const sid = "ses_elapsed_turn";
+    const fake = createFakeTuiApi({
+      sessions: new Map([
+        [sid, [fakeUser("msg_elapsed_user", 99_000), fakeLiveAssistant("msg_elapsed_live", 99_500)]],
+      ]),
+      stateUsage: new Map([[sid, { tokens: tokens(10, 1, 0) }]]),
+    });
+    const model = createUsageModel(fake.api, () => sid, solid);
+    await nextTask();
+
+    fake.emit("session.execution.started", { sessionID: sid });
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "0s");
+    t.mock.timers.tick(2_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "2s");
+
+    fake.emit("session.execution.succeeded", { sessionID: sid });
+    t.mock.timers.tick(5_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "2s");
+
+    fake.emit("session.execution.started", { sessionID: sid });
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "0s");
+    t.mock.timers.tick(65_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "1m 5s");
+  });
+});
+
+test("every turn-stop signal freezes the elapsed timer", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 130_000 });
+  for (const type of [
+    "session.execution.failed",
+    "session.execution.interrupted",
+    "session.idle",
+  ] as const) {
+    await withAsyncRoot(async () => {
+      const sid = `ses_elapsed_stop_${type}`;
+      const fake = createFakeTuiApi({
+        sessions: new Map([
+          [sid, [fakeUser("msg_elapsed_stop_user", 129_000), fakeLiveAssistant("msg_elapsed_stop_live", 129_500)]],
+        ]),
+        stateUsage: new Map([[sid, { tokens: tokens(10, 1, 0) }]]),
+      });
+      const model = createUsageModel(fake.api, () => sid, solid);
+      await nextTask();
+
+      fake.emit("session.execution.started", { sessionID: sid });
+      t.mock.timers.tick(1_000);
+      fake.emit(type, {
+        sessionID: sid,
+        reason: "user",
+        error: { type: "error", message: "boom" },
+      });
+      t.mock.timers.tick(5_000);
+      assert.equal(rowValue(model.rows(), "Elapsed time"), "1s");
+    });
+  }
+});
+
+test("elapsed time seeds mid-turn from the turn's opening message and keeps ticking", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 428_000 });
+  await withAsyncRoot(async () => {
+    const sid = "ses_elapsed_seed";
+    const fake = createFakeTuiApi({
+      sessions: new Map([
+        [sid, [fakeUser("msg_elapsed_seed_user", 105_000), fakeLiveAssistant("msg_elapsed_seed_live", 105_500)]],
+      ]),
+      stateUsage: new Map([[sid, { tokens: tokens(10, 1, 0) }]]),
+      active: new Map([[sid, "running"]]),
+    });
+    const model = createUsageModel(fake.api, () => sid, solid);
+    await nextTask();
+
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "5m 23s");
+    t.mock.timers.tick(1_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "5m 24s");
+  });
+});
+
+test("elapsed time shows the finished turn's duration, with or without an idle marker", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 120_000 });
+  for (const withMarker of [true, false]) {
+    await withAsyncRoot(async () => {
+      const sid = withMarker ? "ses_elapsed_marker" : "ses_elapsed_markerless";
+      const messages: SessionMessageInfo[] = [
+        fakeUser("msg_elapsed_history_user", 1_000),
+        fakeAssistant("msg_elapsed_history_step", {
+          time: { created: 1_100, streamed: 1_200, completed: 62_000 },
+        }),
+      ];
+      if (withMarker) messages.push(fakeIdle("msg_elapsed_history_idle", 125_000));
+      const fake = createFakeTuiApi({
+        sessions: new Map([[sid, messages]]),
+        stateUsage: new Map([[sid, { tokens: tokens(10, 1, 0) }]]),
+      });
+      const model = createUsageModel(fake.api, () => sid, solid);
+      await nextTask();
+
+      // The marker closes the turn; without one the last step's completion does.
+      assert.equal(rowValue(model.rows(), "Elapsed time"), withMarker ? "2m 4s" : "1m 1s");
+    });
+  }
+});
+
 test("invalid steps are skipped and stream gaps stay in the decode denominator", async () => {
   await withAsyncRoot(async () => {
     const sid = "ses_speed_boundaries";
@@ -702,6 +811,7 @@ test("section title and row labels are pinned", () => {
     "Session cost",
     "Generation speed",
     "Time to first token",
+    "Elapsed time",
   ]);
 });
 
@@ -713,7 +823,7 @@ test("real paid session: authoritative totals render exactly", async () => {
     await nextTask();
     assert.equal(model.status(), "ready");
     const rows = model.rows();
-    assert.equal(rows.length, 10);
+    assert.equal(rows.length, 11);
     assertLabels(rows);
     assert.equal(rowValue(rows, "Input"), "649,437");
     assert.equal(rowValue(rows, "Output"), "52,276");
@@ -723,6 +833,16 @@ test("real paid session: authoritative totals render exactly", async () => {
     assert.equal(rowValue(rows, "Cache rate"), "77.2%");
     // One finished assistant message per step in the frozen history.
     assert.equal(rowValue(rows, "Steps"), "42");
+    // Elapsed time of the trailing turn: from its opening user message to the
+    // last step's completion (the frozen history carries no idle markers).
+    const fixture = loadHistoryFixtures().sessions.get(PAID) as SessionFixture;
+    const run = turnRuns(fixture.messages).at(-1) as SessionMessageAssistant[];
+    const opener = fixture.messages[fixture.messages.indexOf(run[0]) - 1];
+    const completed = run[run.length - 1].time.completed as number;
+    const seconds = Math.floor((completed - opener.time.created) / 1_000);
+    const expected =
+      seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
+    assert.equal(rowValue(rows, "Elapsed time"), expected);
   });
 });
 

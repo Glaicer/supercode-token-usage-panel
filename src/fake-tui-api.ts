@@ -11,6 +11,8 @@ import type { UsageApi } from "./usage-model.ts";
 export interface FakeStore {
   /** Per-session message history, in transcript order. */
   sessions: Map<string, readonly SessionMessageInfo[]>;
+  /** Host-reported activity per session; absent means idle. */
+  active?: ReadonlyMap<string, "idle" | "running">;
   stateUsage?: Map<string, FakeUsage>;
   serverUsage?: Map<string, FakeUsage>;
   children?: Map<string, readonly string[]>;
@@ -143,6 +145,7 @@ export function createFakeTuiApi(initial: FakeStore): FakeTuiApi {
       },
       session: {
         get: (sessionID: string) => makeSession(store(), sessionID, "state"),
+        status: (sessionID: string) => store().active?.get(sessionID) ?? "idle",
         message: {
           list: (sessionID: string) => {
             const messages = store().sessions.get(sessionID)

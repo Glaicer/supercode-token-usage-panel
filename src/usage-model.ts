@@ -2,8 +2,9 @@
  * Usage Model — every number, formula and string of the Token Usage section.
  *
  * Reads OpenCode's authoritative session aggregate and family message history,
- * folds completed steps/speed/TTFT, and estimates the current visible stream from
- * deltas. Exposes only ready-to-render rows plus a state flag.
+ * folds completed steps/speed/TTFT, tracks the elapsed time of the current
+ * turn, and estimates the current visible stream from deltas. Exposes only
+ * ready-to-render rows plus a state flag.
  *
  * OpenCode v2 shape: one assistant message = one model step, so per-step tokens
  * live on `message.tokens` (there are no `step-finish` parts). `time.streamed`
@@ -41,6 +42,7 @@ export const USAGE_LABELS = [
   "Session cost",
   "Generation speed",
   "Time to first token",
+  "Elapsed time",
 ] as const;
 
 export const USAGE_STATUS_TEXT: Record<UsageStatus, string> = {
@@ -90,6 +92,13 @@ interface LiveTtftState {
   now: number;
 }
 
+/** Elapsed time of the current (or last) turn: frozen once the turn stops. */
+interface TurnClock {
+  startedAt: number;
+  endedAt?: number;
+  now: number;
+}
+
 type UsageEventType =
   | "session.created"
   | "session.deleted"
@@ -107,7 +116,9 @@ type UsageEventType =
   | "session.reasoning.ended"
   | "session.revert.committed"
   | "session.execution.started"
+  | "session.execution.succeeded"
   | "session.execution.failed"
+  | "session.execution.interrupted"
   | "session.idle"
   | "server.connected";
 
@@ -136,6 +147,7 @@ export interface UsageApi {
     ): () => void;
     session: {
       get(sessionID: string): SessionInfo | undefined;
+      status(sessionID: string): "idle" | "running";
       message: { list(sessionID: string): readonly SessionMessageInfo[] };
     };
   };
@@ -234,6 +246,12 @@ function formatTtft(metrics: CompletedMetrics | undefined): string {
   if (!metrics || !positive(metrics.ttftMs) || !positive(metrics.ttftCount)) return USAGE_DASH;
   const value = metrics.ttftMs / metrics.ttftCount / 1_000;
   return positive(value) ? `${value.toFixed(1)}s` : USAGE_DASH;
+}
+
+function formatElapsed(clock: TurnClock): string {
+  const seconds = Math.floor(Math.max(0, (clock.endedAt ?? clock.now) - clock.startedAt) / 1_000);
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
 }
 
 function buildUsageRows(totals: Totals, metrics: CompletedMetrics | undefined): UsageRow[] {
@@ -399,6 +417,44 @@ function completedMetrics(
     result.decodeMs += decode;
   }
   return result;
+}
+
+/**
+ * The turn clock reconstructed from a session's message history. v2 projects an
+ * idle marker at turn end, so the trailing turn sits between the last marker
+ * and the end of the list; histories without markers fall back to the trailing
+ * assistant run and its opening message. The turn end comes from the closing
+ * marker or, markerless, from the last step's completion — and only a session
+ * the host reports active may reconstruct a still-running turn.
+ */
+function turnClockFromHistory(
+  messages: readonly SessionMessageInfo[],
+  running: boolean,
+  now: number,
+): TurnClock | undefined {
+  const last = messages[messages.length - 1];
+  if (!last) return undefined;
+  let runEnd = messages.length;
+  let turnEnd: number | undefined;
+  if (last.type === "idle") {
+    turnEnd = last.time.created;
+    runEnd--;
+  }
+  let runStart = runEnd;
+  while (runStart > 0 && messages[runStart - 1].type === "assistant") runStart--;
+  const opener = runStart > 0 ? messages[runStart - 1] : undefined;
+  const startedAt =
+    opener && opener.type !== "idle"
+      ? opener.time.created
+      : runStart < runEnd
+        ? messages[runStart].time.created
+        : undefined;
+  if (startedAt === undefined) return undefined;
+  if (turnEnd !== undefined) return { startedAt, endedAt: turnEnd, now: turnEnd };
+  if (running) return { startedAt, now };
+  const tail = messages[runEnd - 1];
+  const completed = tail && tail.type === "assistant" ? tail.time.completed : undefined;
+  return completed !== undefined ? { startedAt, endedAt: completed, now: completed } : undefined;
 }
 
 function addMetrics(target: CompletedMetrics, source: CompletedMetrics): void {
@@ -598,6 +654,7 @@ export function createUsageModel(
   const [remote, setRemote] = solid.createSignal<RemoteState>();
   const [liveSpeed, setLiveSpeed] = solid.createSignal<LiveSpeedState>();
   const [liveTtft, setLiveTtft] = solid.createSignal<LiveTtftState>();
+  const [turnClock, setTurnClock] = solid.createSignal<TurnClock>();
   let request = 0;
   let nextAsyncRequest = 0;
   const memberRequests = new Map<string, number>();
@@ -658,8 +715,15 @@ export function createUsageModel(
     };
   };
 
+  const clockRunning = (): boolean => {
+    const clock = solid.untrack(turnClock);
+    return clock !== undefined && clock.endedAt === undefined;
+  };
   const stopTimerIfIdle = () => {
-    if (liveSpeed() || liveTtft() || !timer) return;
+    // Imperative housekeeping: never subscribe the calling computation to the
+    // live-state signals (the model's effect would loop on its own writes).
+    const idle = solid.untrack(() => !liveSpeed() && !liveTtft() && !clockRunning());
+    if (!idle || !timer) return;
     clearInterval(timer);
     timer = undefined;
   };
@@ -676,6 +740,9 @@ export function createUsageModel(
         },
       );
       setLiveTtft((current) => current && { ...current, now });
+      setTurnClock((current) =>
+        current && current.endedAt === undefined ? { ...current, now } : current,
+      );
       stopTimerIfIdle();
     }, 1_000);
   };
@@ -690,8 +757,29 @@ export function createUsageModel(
   const clearProvisional = () => {
     setLiveSpeed(undefined);
     setLiveTtft(undefined);
-    if (timer) clearInterval(timer);
-    timer = undefined;
+    stopTimerIfIdle();
+  };
+  const startTurnClock = (startedAt: number) => {
+    setTurnClock({ startedAt, now: Date.now() });
+    ensureTimer();
+  };
+  const stopTurnClock = (endedAt: number) => {
+    setTurnClock((current) =>
+      current && current.endedAt === undefined ? { ...current, endedAt, now: endedAt } : current,
+    );
+    stopTimerIfIdle();
+  };
+  const seedTurnClock = (sessionID: string) => {
+    let clock: TurnClock | undefined;
+    try {
+      const running = api.data.session.status(sessionID) === "running";
+      clock = turnClockFromHistory(api.data.session.message.list(sessionID), running, Date.now());
+    } catch {
+      clock = undefined;
+    }
+    setTurnClock(clock);
+    if (clockRunning()) ensureTimer();
+    else stopTimerIfIdle();
   };
 
   /**
@@ -785,6 +873,7 @@ export function createUsageModel(
 
   solid.createEffect(() => {
     const sessionID = sessionId();
+    setTurnClock(undefined);
     clearProvisional();
     members = new Set([sessionID]);
     memberRequests.clear();
@@ -798,6 +887,7 @@ export function createUsageModel(
     firstOutputs.clear();
     setRemote(undefined);
     solid.untrack(() => {
+      seedTurnClock(sessionID);
       const turn = scanTurnState(sessionID);
       ttftTurnShown = turn.shown;
       if (turn.seed) {
@@ -1001,6 +1091,17 @@ export function createUsageModel(
   const offExecutionStarted = api.data.on("session.execution.started", (event) => {
     if (event.data.sessionID !== sessionId()) return;
     ttftTurnShown = false;
+    startTurnClock(event.created);
+  });
+  const onTurnStopped = (sessionID: string, endedAt: number) => {
+    if (sessionID !== sessionId()) return;
+    stopTurnClock(endedAt);
+  };
+  const offExecutionSucceeded = api.data.on("session.execution.succeeded", (event) => {
+    onTurnStopped(event.data.sessionID, event.created);
+  });
+  const offExecutionInterrupted = api.data.on("session.execution.interrupted", (event) => {
+    onTurnStopped(event.data.sessionID, event.created);
   });
   const offStepStreamed = api.data.on("session.step.streamed", (event) => {
     const { sessionID, assistantMessageID } = event.data;
@@ -1097,27 +1198,37 @@ export function createUsageModel(
     onStreamEnded("reasoning", event.data);
   });
   const offContentUpdated = api.data.on("session.revert.committed", (event) => {
-    if (event.data.sessionID === sessionId()) clearProvisional();
+    if (event.data.sessionID === sessionId()) {
+      clearProvisional();
+      seedTurnClock(sessionId());
+    }
     if (members.has(event.data.sessionID)) refresh(sessionId());
   });
   const offServerConnected = api.data.on("server.connected", () => {
     clearProvisional();
+    seedTurnClock(sessionId());
     refresh(sessionId());
   });
   const offExecutionFailed = api.data.on("session.execution.failed", (event) => {
+    onTurnStopped(event.data.sessionID, event.created);
     if (!event.data.sessionID || event.data.sessionID === sessionId()) clearProvisional();
   });
   const offSessionIdle = api.data.on("session.idle", (event) => {
-    if (event.data.sessionID === sessionId()) clearProvisional();
+    if (event.data.sessionID !== sessionId()) return;
+    stopTurnClock(event.created);
+    clearProvisional();
   });
   solid.onCleanup(() => {
     request++;
+    setTurnClock(undefined);
     clearProvisional();
     offSessionCreated();
     offSessionDeleted();
     offUsageUpdated();
     offStepStarted();
     offExecutionStarted();
+    offExecutionSucceeded();
+    offExecutionInterrupted();
     offStepStreamed();
     offTextStarted();
     offReasoningStarted();
@@ -1140,11 +1251,19 @@ export function createUsageModel(
     try {
       const sessionID = sessionId();
       const loaded = remote();
+      const clock = turnClock();
+      const elapsedRows: UsageRow[] = clock
+        ? [{ label: USAGE_LABELS[10], value: formatElapsed(clock) }]
+        : [];
       if (loaded?.sessionID === sessionID && loaded.failed && !loaded.totals) {
         const speed = liveSpeed();
         const ttft = liveTtft();
         const diagnostics = speed || ttft ? buildDiagnosticRows(undefined, speed, ttft) : [];
-        return { status: "unavailable", rows: diagnostics, hasDescendants: false };
+        return {
+          status: "unavailable",
+          rows: [...diagnostics, ...elapsedRows],
+          hasDescendants: false,
+        };
       }
       const totals =
         loaded?.sessionID === sessionID && loaded.totals
@@ -1159,7 +1278,7 @@ export function createUsageModel(
         const diagnostics = speed || ttft ? buildDiagnosticRows(undefined, speed, ttft) : [];
         return {
           status: loaded?.sessionID === sessionID && loaded.failed ? "unavailable" : "loading",
-          rows: diagnostics,
+          rows: [...diagnostics, ...elapsedRows],
           hasDescendants: false,
         };
       }
@@ -1168,12 +1287,12 @@ export function createUsageModel(
       const ttft = liveTtft();
       if (allZero(totals)) {
         const diagnostics = speed || ttft ? buildDiagnosticRows(undefined, speed, ttft) : [];
-        return { status: "empty", rows: diagnostics, hasDescendants: false };
+        return { status: "empty", rows: [...diagnostics, ...elapsedRows], hasDescendants: false };
       }
       const diagnostics = buildDiagnosticRows(metrics, speed, ttft);
       return {
         status: "ready",
-        rows: [...buildUsageRows(totals, metrics), ...diagnostics],
+        rows: [...buildUsageRows(totals, metrics), ...diagnostics, ...elapsedRows],
         hasDescendants,
       };
     } catch {

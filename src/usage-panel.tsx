@@ -1,8 +1,8 @@
 /**
  * supercode.token-usage — TUI sidebar section showing the cumulative Token
  * Usage of the current session family: token totals, cache rate, completed
- * step count, generation speed/TTFT, and provisional diagnostics for the
- * visible stream.
+ * step count, turn elapsed time, generation speed/TTFT, and provisional
+ * diagnostics for the visible stream.
  * Family totals include all subagent descendants; when the current session
  * itself has descendant sessions the section title becomes
  * "Token Usage (including subagents)", otherwise it stays "Token Usage".
