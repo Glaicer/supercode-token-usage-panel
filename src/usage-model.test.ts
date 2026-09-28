@@ -165,7 +165,7 @@ test("completed generation speed is weighted and excludes TTFT and tool time", a
     await nextTask();
 
     // 300 generated tokens / (2 + 4) seconds = 50 tps.
-    assert.equal(rowValue(model.rows(), "Generation speed"), "50 tps");
+    assert.equal(rowValue(model.rows(), "Average speed"), "50 tps");
     assert.equal(rowValue(model.rows(), "Time to first token"), "1.0s");
   });
 });
@@ -186,7 +186,7 @@ test("overlapping tool calls cannot inflate completed generation speed", async (
     const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
 
-    assert.equal(rowValue(model.rows(), "Generation speed"), "50 tps");
+    assert.equal(rowValue(model.rows(), "Average speed"), "50 tps");
   });
 });
 
@@ -206,7 +206,7 @@ test("stream end is not first token, including interrupted and tool-only steps",
       const model = createUsageModel(fake.api, () => sid, solid);
       await nextTask();
 
-      assert.equal(rowValue(model.rows(), "Generation speed"), "50 tps");
+      assert.equal(rowValue(model.rows(), "Average speed"), "50 tps");
       assert.equal(rowValue(model.rows(), "Time to first token"), "1.0s");
     });
   }
@@ -224,7 +224,7 @@ test("text-first history without first-output timing does not fabricate diagnost
     const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
 
-    assert.equal(rowValue(model.rows(), "Generation speed"), "–");
+    assert.equal(rowValue(model.rows(), "Average speed"), "–");
     assert.equal(rowValue(model.rows(), "Time to first token"), "–");
     assert.equal(rowValue(model.rows(), "Output"), "80");
     assert.equal(rowValue(model.rows(), "Steps"), "1");
@@ -256,11 +256,11 @@ test("live first-output events time text-first steps through completion and refr
     fake.emit("session.step.ended", { sessionID: sid, assistantMessageID: live.id });
     await nextTask();
 
-    assert.equal(rowValue(model.rows(), "Generation speed"), "50 tps");
+    assert.equal(rowValue(model.rows(), "Average speed"), "50 tps");
     assert.equal(rowValue(model.rows(), "Time to first token"), "1.0s");
     fake.emit("server.connected", {});
     await nextTask();
-    assert.equal(rowValue(model.rows(), "Generation speed"), "50 tps");
+    assert.equal(rowValue(model.rows(), "Average speed"), "50 tps");
   });
 });
 
@@ -299,6 +299,8 @@ test("live diagnostics tick from Unicode deltas using a snapshotted model calibr
     t.mock.timers.tick(1_000);
     // Calibration: (400 + 600 chars) / (100 + 100 tokens) = 5 chars/token.
     assert.equal(rowValue(model.rows(), "Live speed"), "~2 tps");
+    assert.equal(rowValue(model.rows(), "Average speed"), "100 tps");
+    const streamingLabels = model.rows().map((row) => row.label);
 
     const recalibrated = fakeAssistant("msg_calibration", {
       time: { created: 1_000, streamed: 3_000, completed: 3_001 },
@@ -319,7 +321,9 @@ test("live diagnostics tick from Unicode deltas using a snapshotted model calibr
     assert.equal(rowValue(model.rows(), "Live speed"), "~2 tps");
 
     fake.emit("session.text.ended", { sessionID: sid, assistantMessageID: live.id, ordinal: 0 });
-    assert.equal(rowValue(model.rows(), "Generation speed"), "100 tps");
+    assert.equal(rowValue(model.rows(), "Live speed"), "–");
+    assert.equal(rowValue(model.rows(), "Average speed"), "100 tps");
+    assert.deepEqual(model.rows().map((row) => row.label), streamingLabels);
   });
 });
 
@@ -431,7 +435,7 @@ test("live speed ignores descendants and resets on session switch and reconnect"
       ordinal: 0,
       delta: "child",
     });
-    assert.equal(rowValue(model.rows(), "Generation speed"), "–");
+    assert.equal(rowValue(model.rows(), "Average speed"), "–");
 
     fake.emit("session.text.delta", {
       sessionID: rootA,
@@ -442,7 +446,7 @@ test("live speed ignores descendants and resets on session switch and reconnect"
     assert.equal(rowValue(model.rows(), "Live speed"), "–");
 
     setSessionID(rootB);
-    assert.equal(rowValue(model.rows(), "Generation speed"), "–");
+    assert.equal(rowValue(model.rows(), "Average speed"), "–");
 
     setSessionID(rootA);
     fake.emit("session.text.delta", {
@@ -453,7 +457,7 @@ test("live speed ignores descendants and resets on session switch and reconnect"
     });
     assert.equal(rowValue(model.rows(), "Live speed"), "–");
     fake.emit("server.connected", {});
-    assert.equal(rowValue(model.rows(), "Generation speed"), "–");
+    assert.equal(rowValue(model.rows(), "Average speed"), "–");
   });
 });
 
@@ -643,7 +647,7 @@ test("invalid steps are skipped and stream gaps stay in the decode denominator",
     await nextTask();
 
     // The 1.5s reasoning-to-text gap stays in the 3s decode denominator.
-    assert.equal(rowValue(model.rows(), "Generation speed"), "33 tps");
+    assert.equal(rowValue(model.rows(), "Average speed"), "33 tps");
     // Zero-token and zero-decode steps still have valid completed TTFT samples.
     assert.equal(rowValue(model.rows(), "Time to first token"), "1.0s");
   });
@@ -670,7 +674,7 @@ test("short streams never show a number and a later visible part starts a new me
     });
     assert.equal(rowValue(model.rows(), "Live speed"), "–");
     fake.emit("session.text.ended", { sessionID: sid, assistantMessageID: live.id, ordinal: 0 });
-    assert.equal(rowValue(model.rows(), "Generation speed"), "–");
+    assert.equal(rowValue(model.rows(), "Average speed"), "–");
 
     fake.emit("session.text.delta", {
       sessionID: sid,
@@ -724,11 +728,11 @@ test("completed step update refreshes metrics after a settling race", async () =
     const fake = createFakeTuiApi(initial);
     const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
-    assert.equal(rowValue(model.rows(), "Generation speed"), "–");
+    assert.equal(rowValue(model.rows(), "Average speed"), "–");
 
     fake.emit("session.step.ended", { sessionID: sid, assistantMessageID: live.id });
     await nextTask();
-    assert.equal(rowValue(model.rows(), "Generation speed"), "–");
+    assert.equal(rowValue(model.rows(), "Average speed"), "–");
 
     const completed = fakeAssistant("msg_completion_race", {
       time: { created: 1_000, streamed: 3_000, completed: 3_001 },
@@ -738,7 +742,7 @@ test("completed step update refreshes metrics after a settling race", async () =
     fake.setStore({ sessions: new Map([[sid, [completed]]]), stateUsage: initial.stateUsage });
     fake.emit("session.step.ended", { sessionID: sid, assistantMessageID: live.id });
     await nextTask();
-    assert.equal(rowValue(model.rows(), "Generation speed"), "100 tps");
+    assert.equal(rowValue(model.rows(), "Average speed"), "100 tps");
   });
 });
 
@@ -756,7 +760,7 @@ test("completed descendant step update refreshes family diagnostics", async () =
     const fake = createFakeTuiApi(initial);
     const model = createUsageModel(fake.api, () => root, solid);
     await nextTask();
-    assert.equal(rowValue(model.rows(), "Generation speed"), "–");
+    assert.equal(rowValue(model.rows(), "Average speed"), "–");
 
     const completed = fakeAssistant("msg_descendant_completion", {
       time: { created: 1_000, streamed: 3_000, completed: 3_001 },
@@ -767,7 +771,7 @@ test("completed descendant step update refreshes family diagnostics", async () =
     fake.emit("session.step.ended", { sessionID: child, assistantMessageID: live.id });
     await nextTask();
 
-    assert.equal(rowValue(model.rows(), "Generation speed"), "100 tps");
+    assert.equal(rowValue(model.rows(), "Average speed"), "100 tps");
   });
 });
 
@@ -784,7 +788,7 @@ test("positive speeds that round to zero render as unavailable", async (t) => {
     const fake = createFakeTuiApi({ sessions: new Map([[sid, [completed, live]]]) });
     const model = createUsageModel(fake.api, () => sid, solid);
     await nextTask();
-    assert.equal(rowValue(model.rows(), "Generation speed"), "–");
+    assert.equal(rowValue(model.rows(), "Average speed"), "–");
 
     fake.emit("session.text.delta", {
       sessionID: sid,
@@ -809,7 +813,8 @@ test("section title and row labels are pinned", () => {
     "Cache rate",
     "Steps",
     "Session cost",
-    "Generation speed",
+    "Live speed",
+    "Average speed",
     "Time to first token",
     "Elapsed time",
   ]);
@@ -823,7 +828,7 @@ test("real paid session: authoritative totals render exactly", async () => {
     await nextTask();
     assert.equal(model.status(), "ready");
     const rows = model.rows();
-    assert.equal(rows.length, 11);
+    assert.equal(rows.length, 12);
     assertLabels(rows);
     assert.equal(rowValue(rows, "Input"), "649,437");
     assert.equal(rowValue(rows, "Output"), "52,276");
@@ -1099,7 +1104,7 @@ test("subagent children: descendant usage merges into the root totals", async ()
     assert.equal(rowValue(rows, "Cache write"), "60");
     assert.equal(rowValue(rows, "Steps"), "2");
     assert.equal(rowValue(rows, "Session cost"), "$3.75");
-    assert.equal(rowValue(rows, "Generation speed"), "19 tps");
+    assert.equal(rowValue(rows, "Average speed"), "19 tps");
     assert.equal(rowValue(rows, "Time to first token"), "0.1s");
     assert.ok(model.includesSubagents(), "indicator must be on when a child exists");
   });

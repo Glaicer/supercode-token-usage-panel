@@ -40,7 +40,8 @@ export const USAGE_LABELS = [
   "Cache rate",
   "Steps",
   "Session cost",
-  "Generation speed",
+  "Live speed",
+  "Average speed",
   "Time to first token",
   "Elapsed time",
 ] as const;
@@ -283,11 +284,12 @@ function buildDiagnosticRows(
 ): UsageRow[] {
   return [
     {
-      label: liveSpeed ? "Live speed" : USAGE_LABELS[8],
-      value: liveSpeed ? formatLiveSpeed(liveSpeed) : formatGenerationSpeed(metrics),
+      label: USAGE_LABELS[8],
+      value: liveSpeed ? formatLiveSpeed(liveSpeed) : USAGE_DASH,
     },
+    { label: USAGE_LABELS[9], value: formatGenerationSpeed(metrics) },
     {
-      label: USAGE_LABELS[9],
+      label: USAGE_LABELS[10],
       value: liveTtft ? formatLiveTtft(liveTtft) : formatTtft(metrics),
     },
   ];
@@ -1253,7 +1255,7 @@ export function createUsageModel(
       const loaded = remote();
       const clock = turnClock();
       const elapsedRows: UsageRow[] = clock
-        ? [{ label: USAGE_LABELS[10], value: formatElapsed(clock) }]
+        ? [{ label: USAGE_LABELS[11], value: formatElapsed(clock) }]
         : [];
       if (loaded?.sessionID === sessionID && loaded.failed && !loaded.totals) {
         const speed = liveSpeed();
