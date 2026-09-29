@@ -48,6 +48,27 @@ The panel claims `after: "sidebar.content"`, and so do other plugins that extend
 
 The package ships a no-op server entry purely to make this possible: a `./tui`-only package can only be registered in `cli.json`, which always sorts last.
 
+## Install on OpenCode v1
+
+On OpenCode v1 install plugin version **0.1.4**. Pin the version in the spec below; a bare package name resolves to `latest`, which requires OpenCode v2:
+
+```bash
+opencode plugin @glaicer/supercode-token-usage-panel@0.1.4 --global
+```
+
+- `--global` (`-g`) writes into the global config (`~/.config/opencode/tui.json`); default is project-local (`.opencode/tui.json`).
+- If the plugin is already configured without a version, rerun with `--force` (`-f`) to replace that entry with the pinned spec — otherwise the command reports `Already configured` and keeps the unpinned entry.
+
+Manual install also works: put the pinned spec in the `plugin` array of `tui.json` (global `~/.config/opencode/tui.json` or local `<project>/.opencode/tui.json`):
+
+```jsonc
+{
+  "plugin": ["@glaicer/supercode-token-usage-panel@0.1.4"]
+}
+```
+
+v1 resolves the npm spec (including the version) and installs it automatically at startup — no `npm install` needed. Restart OpenCode after saving.
+
 ## Development
 
 ```bash
