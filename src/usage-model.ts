@@ -93,7 +93,10 @@ interface LiveTtftState {
   now: number;
 }
 
-/** Elapsed time of the current (or last) turn: frozen once the turn stops. */
+/**
+ * Elapsed time of the current (or last) turn: frozen once the turn stops —
+ * but only once the family's subagents have finished too.
+ */
 interface TurnClock {
   startedAt: number;
   endedAt?: number;
@@ -148,6 +151,8 @@ export interface UsageApi {
     ): () => void;
     session: {
       get(sessionID: string): SessionInfo | undefined;
+      /** Family member ids (the root and its descendants) known to the host store. */
+      family(sessionID: string): string[];
       status(sessionID: string): "idle" | "running";
       message: { list(sessionID: string): readonly SessionMessageInfo[] };
     };
@@ -675,6 +680,8 @@ export function createUsageModel(
   let timer: ReturnType<typeof setInterval> | undefined;
   let ttftTurnShown = false;
   let members: ReadonlySet<string> = new Set();
+  /** The viewed session's turn stop was seen; the clock may still be counting subagent time. */
+  let mainTurnEnded = false;
 
   const isAttachable = (session: SessionRef): boolean =>
     !!session.parentID && members.has(session.parentID) && !members.has(session.id);
@@ -721,6 +728,24 @@ export function createUsageModel(
     const clock = solid.untrack(turnClock);
     return clock !== undefined && clock.endedAt === undefined;
   };
+  /**
+   * Whether any family member other than the viewed session is still
+   * executing. The host store's family index is the authoritative source; the
+   * model's own members and pending announcements cover the gap before a
+   * just-created subagent reaches that index.
+   */
+  const anySubagentRunning = (exclude?: string): boolean => {
+    const viewed = sessionId();
+    for (const id of new Set([
+      ...api.data.session.family(viewed),
+      ...members,
+      ...pendingBranches.keys(),
+    ])) {
+      if (id === viewed || id === exclude) continue;
+      if (api.data.session.status(id) === "running") return true;
+    }
+    return false;
+  };
   const stopTimerIfIdle = () => {
     // Imperative housekeeping: never subscribe the calling computation to the
     // live-state signals (the model's effect would loop on its own writes).
@@ -762,6 +787,7 @@ export function createUsageModel(
     stopTimerIfIdle();
   };
   const startTurnClock = (startedAt: number) => {
+    mainTurnEnded = false;
     setTurnClock({ startedAt, now: Date.now() });
     ensureTimer();
   };
@@ -771,7 +797,7 @@ export function createUsageModel(
     );
     stopTimerIfIdle();
   };
-  const seedTurnClock = (sessionID: string) => {
+  const seedTurnClock = (sessionID: string, allowReopen: boolean) => {
     let clock: TurnClock | undefined;
     try {
       const running = api.data.session.status(sessionID) === "running";
@@ -779,6 +805,13 @@ export function createUsageModel(
     } catch {
       clock = undefined;
     }
+    const wasRunning = clock !== undefined && clock.endedAt === undefined;
+    // The turn may have ended while its subagents keep executing: reopen the
+    // frozen seed so the elapsed keeps counting until the last one settles.
+    if (clock?.endedAt !== undefined && allowReopen && anySubagentRunning()) {
+      clock = { startedAt: clock.startedAt, now: Date.now() };
+    }
+    mainTurnEnded = !wasRunning;
     setTurnClock(clock);
     if (clockRunning()) ensureTimer();
     else stopTimerIfIdle();
@@ -889,7 +922,7 @@ export function createUsageModel(
     firstOutputs.clear();
     setRemote(undefined);
     solid.untrack(() => {
-      seedTurnClock(sessionID);
+      seedTurnClock(sessionID, true);
       const turn = scanTurnState(sessionID);
       ttftTurnShown = turn.shown;
       if (turn.seed) {
@@ -1095,9 +1128,28 @@ export function createUsageModel(
     ttftTurnShown = false;
     startTurnClock(event.created);
   });
-  const onTurnStopped = (sessionID: string, endedAt: number) => {
-    if (sessionID !== sessionId()) return;
+  /**
+   * The viewed session's turn stopped: freeze the clock, unless a subagent of
+   * the family is still executing — the elapsed keeps counting until the last
+   * one settles, and that member's own stop event supplies the final
+   * timestamp.
+   */
+  const settleTurnClock = (endedAt: number) => {
+    mainTurnEnded = true;
+    if (anySubagentRunning()) return;
     stopTurnClock(endedAt);
+  };
+  const onTurnStopped = (sessionID: string, endedAt: number) => {
+    if (sessionID === sessionId()) {
+      settleTurnClock(endedAt);
+      return;
+    }
+    // A family member settled after the main turn: it may be the last running
+    // subagent. The settling session is excluded because the store may not
+    // have applied its own event yet.
+    if (mainTurnEnded && clockRunning() && !anySubagentRunning(sessionID)) {
+      stopTurnClock(endedAt);
+    }
   };
   const offExecutionSucceeded = api.data.on("session.execution.succeeded", (event) => {
     onTurnStopped(event.data.sessionID, event.created);
@@ -1202,13 +1254,13 @@ export function createUsageModel(
   const offContentUpdated = api.data.on("session.revert.committed", (event) => {
     if (event.data.sessionID === sessionId()) {
       clearProvisional();
-      seedTurnClock(sessionId());
+      seedTurnClock(sessionId(), false);
     }
     if (members.has(event.data.sessionID)) refresh(sessionId());
   });
   const offServerConnected = api.data.on("server.connected", () => {
     clearProvisional();
-    seedTurnClock(sessionId());
+    seedTurnClock(sessionId(), false);
     refresh(sessionId());
   });
   const offExecutionFailed = api.data.on("session.execution.failed", (event) => {
@@ -1217,7 +1269,7 @@ export function createUsageModel(
   });
   const offSessionIdle = api.data.on("session.idle", (event) => {
     if (event.data.sessionID !== sessionId()) return;
-    stopTurnClock(event.created);
+    settleTurnClock(event.created);
     clearProvisional();
   });
   solid.onCleanup(() => {

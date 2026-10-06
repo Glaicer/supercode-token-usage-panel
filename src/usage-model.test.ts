@@ -572,6 +572,165 @@ test("every turn-stop signal freezes the elapsed timer", async (t) => {
   }
 });
 
+test("elapsed keeps counting after the main turn stops until the last subagent settles", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 100_000 });
+  await withAsyncRoot(async () => {
+    const sid = "ses_elapsed_subagent";
+    const child = "ses_elapsed_subagent_child";
+    const fake = createFakeTuiApi({
+      sessions: new Map([
+        [sid, [fakeUser("msg_elapsed_sub_user", 99_000), fakeLiveAssistant("msg_elapsed_sub_live", 99_500)]],
+        [child, []],
+      ]),
+      stateUsage: new Map([[sid, { tokens: tokens(10, 1, 0) }]]),
+      children: new Map([[sid, [child]]]),
+      active: new Map([[child, "running"]]),
+    });
+    const model = createUsageModel(fake.api, () => sid, solid);
+    await nextTask();
+
+    fake.emit("session.execution.started", { sessionID: sid });
+    t.mock.timers.tick(2_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "2s");
+
+    // The main turn ends while the subagent keeps executing.
+    fake.emit("session.execution.succeeded", { sessionID: sid });
+    t.mock.timers.tick(3_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "5s");
+
+    // The last subagent settles: the clock freezes at its stop time.
+    fake.emit("session.execution.succeeded", { sessionID: child });
+    t.mock.timers.tick(5_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "5s");
+  });
+});
+
+test("elapsed waits for the last of several running subagents", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 100_000 });
+  await withAsyncRoot(async () => {
+    const sid = "ses_elapsed_two_subagents";
+    const childA = "ses_elapsed_two_subagents_a";
+    const childB = "ses_elapsed_two_subagents_b";
+    const fake = createFakeTuiApi({
+      sessions: new Map([
+        [sid, [fakeUser("msg_elapsed_two_user", 99_000), fakeLiveAssistant("msg_elapsed_two_live", 99_500)]],
+        [childA, []],
+        [childB, []],
+      ]),
+      stateUsage: new Map([[sid, { tokens: tokens(10, 1, 0) }]]),
+      children: new Map([[sid, [childA, childB]]]),
+      active: new Map([
+        [childA, "running"],
+        [childB, "running"],
+      ]),
+    });
+    const model = createUsageModel(fake.api, () => sid, solid);
+    await nextTask();
+
+    fake.emit("session.execution.started", { sessionID: sid });
+    t.mock.timers.tick(2_000);
+    fake.emit("session.execution.succeeded", { sessionID: sid });
+    t.mock.timers.tick(1_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "3s");
+
+    // The first subagent settles, the second keeps the clock running.
+    fake.emit("session.execution.succeeded", { sessionID: childA });
+    t.mock.timers.tick(2_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "5s");
+
+    fake.emit("session.execution.succeeded", { sessionID: childB });
+    t.mock.timers.tick(5_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "5s");
+  });
+});
+
+test("a subagent that settles mid-turn does not freeze the main clock", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 100_000 });
+  await withAsyncRoot(async () => {
+    const sid = "ses_elapsed_midturn_child";
+    const child = "ses_elapsed_midturn_child_child";
+    const fake = createFakeTuiApi({
+      sessions: new Map([
+        [sid, [fakeUser("msg_elapsed_mid_user", 99_000), fakeLiveAssistant("msg_elapsed_mid_live", 99_500)]],
+        [child, []],
+      ]),
+      stateUsage: new Map([[sid, { tokens: tokens(10, 1, 0) }]]),
+      children: new Map([[sid, [child]]]),
+      active: new Map<string, "idle" | "running">([[child, "running"]]),
+    });
+    const model = createUsageModel(fake.api, () => sid, solid);
+    await nextTask();
+
+    fake.emit("session.execution.started", { sessionID: sid });
+    t.mock.timers.tick(2_000);
+    fake.emit("session.execution.succeeded", { sessionID: child });
+    t.mock.timers.tick(2_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "4s");
+
+    fake.emit("session.execution.succeeded", { sessionID: sid });
+    t.mock.timers.tick(3_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "4s");
+  });
+});
+
+test("an idle subagent does not extend the elapsed time past the main turn", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 100_000 });
+  await withAsyncRoot(async () => {
+    const sid = "ses_elapsed_idle_child";
+    const child = "ses_elapsed_idle_child_child";
+    const fake = createFakeTuiApi({
+      sessions: new Map([
+        [sid, [fakeUser("msg_elapsed_idle_user", 99_000), fakeLiveAssistant("msg_elapsed_idle_live", 99_500)]],
+        [child, []],
+      ]),
+      stateUsage: new Map([[sid, { tokens: tokens(10, 1, 0) }]]),
+      children: new Map([[sid, [child]]]),
+    });
+    const model = createUsageModel(fake.api, () => sid, solid);
+    await nextTask();
+
+    fake.emit("session.execution.started", { sessionID: sid });
+    t.mock.timers.tick(2_000);
+    fake.emit("session.execution.succeeded", { sessionID: sid });
+    t.mock.timers.tick(5_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "2s");
+  });
+});
+
+test("elapsed reopens on mount while a subagent of the finished turn still runs", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 200_000 });
+  await withAsyncRoot(async () => {
+    const sid = "ses_elapsed_reopen";
+    const child = "ses_elapsed_reopen_child";
+    const fake = createFakeTuiApi({
+      sessions: new Map([
+        [sid, [
+          fakeUser("msg_elapsed_reopen_user", 100_000),
+          fakeAssistant("msg_elapsed_reopen_step", {
+            time: { created: 100_500, streamed: 100_600, completed: 120_000 },
+          }),
+        ]],
+        [child, []],
+      ]),
+      stateUsage: new Map([[sid, { tokens: tokens(10, 1, 0) }]]),
+      children: new Map([[sid, [child]]]),
+      active: new Map([[child, "running"]]),
+    });
+    const model = createUsageModel(fake.api, () => sid, solid);
+    await nextTask();
+
+    // The turn completed at 120s, but the mount reopens the clock while the
+    // subagent executes; the elapsed keeps counting from the turn's start.
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "1m 40s");
+    t.mock.timers.tick(1_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "1m 41s");
+
+    fake.emit("session.execution.succeeded", { sessionID: child });
+    t.mock.timers.tick(5_000);
+    assert.equal(rowValue(model.rows(), "Elapsed time"), "1m 41s");
+  });
+});
+
 test("elapsed time seeds mid-turn from the turn's opening message and keeps ticking", async (t) => {
   t.mock.timers.enable({ apis: ["Date", "setInterval"], now: 428_000 });
   await withAsyncRoot(async () => {

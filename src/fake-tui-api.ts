@@ -11,7 +11,9 @@ import type { UsageApi } from "./usage-model.ts";
 export interface FakeStore {
   /** Per-session message history, in transcript order. */
   sessions: Map<string, readonly SessionMessageInfo[]>;
-  /** Host-reported activity per session; absent means idle. */
+  /** Host-reported activity per session; absent means idle. `emit` applies
+   * the same execution transitions the host store applies before plugin
+   * handlers run. */
   active?: ReadonlyMap<string, "idle" | "running">;
   stateUsage?: Map<string, FakeUsage>;
   serverUsage?: Map<string, FakeUsage>;
@@ -25,6 +27,14 @@ export interface FakeUsage {
   tokens: TokenUsageInfo;
   cost?: number;
 }
+
+/** Execution events flip the host store's per-session status; the fake mirrors that. */
+const EXECUTION_STATUS_EVENTS = new Set([
+  "session.execution.started",
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.execution.interrupted",
+]);
 
 function findParentID(
   children: Map<string, readonly string[]> | undefined,
@@ -145,6 +155,34 @@ export function createFakeTuiApi(initial: FakeStore): FakeTuiApi {
       },
       session: {
         get: (sessionID: string) => makeSession(store(), sessionID, "state"),
+        family: (sessionID: string) => {
+          const snapshot = store();
+          // Walk parentID up to the family root, then collect the root plus
+          // every descendant reachable through the children map.
+          let root = sessionID;
+          const ancestors = new Set([root]);
+          for (let parent = findParentID(snapshot.children, root); parent; ) {
+            if (ancestors.has(parent)) break;
+            ancestors.add(parent);
+            root = parent;
+            parent = findParentID(snapshot.children, root);
+          }
+          const ids = new Set<string>([root]);
+          let grew = true;
+          while (grew) {
+            grew = false;
+            for (const [ancestor, kids] of snapshot.children ?? []) {
+              if (!ids.has(ancestor)) continue;
+              for (const kid of kids) {
+                if (!ids.has(kid)) {
+                  ids.add(kid);
+                  grew = true;
+                }
+              }
+            }
+          }
+          return [...ids];
+        },
         status: (sessionID: string) => store().active?.get(sessionID) ?? "idle",
         message: {
           list: (sessionID: string) => {
@@ -161,6 +199,13 @@ export function createFakeTuiApi(initial: FakeStore): FakeTuiApi {
     api,
     setStore: (next) => setStore(next),
     emit: (type, data) => {
+      const sessionID = (data as { sessionID?: string }).sessionID;
+      if (EXECUTION_STATUS_EVENTS.has(type) && sessionID) {
+        const current = store();
+        const active = new Map(current.active ?? []);
+        active.set(sessionID, type === "session.execution.started" ? "running" : "idle");
+        setStore({ ...current, active });
+      }
       const event = { id: `evt_${++sequence}`, created: Date.now(), type, data }
       for (const handler of listeners.get(type) ?? []) handler(event as never)
     },
